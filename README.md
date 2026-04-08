@@ -1,3 +1,12 @@
+---
+title: Attention Economy Env
+emoji: 🎯
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # Attention Economy Environment
 
 > **Trains agents to maximise user engagement without compromising well-being** —
