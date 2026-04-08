@@ -565,10 +565,10 @@ def main() -> None:
         ]
         if missing:
             print(
-                f"[ERROR] Missing required env vars: {', '.join(missing)}",
+                f"[WARN] Missing env vars: {', '.join(missing)} — falling back to dry-run mode",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            args.dry_run = True
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
     results: Dict[str, Dict] = {}
