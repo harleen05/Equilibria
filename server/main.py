@@ -73,25 +73,27 @@ def root():
 async def reset(request: Request):
     try:
         data = await request.json()
-        task = data.get("task", "medium")   # ✅ flexible
+    except Exception:
+        data = {}
 
-        if task not in ("easy", "medium", "hard"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid task: {task}. Choose easy/medium/hard."
-            )
+    # Handle both "task" and "task_id" keys, and both naming conventions
+    raw = data.get("task_id") or data.get("task") or "medium"
 
+    TASK_MAP = {
+        "easy_recommendation": "easy",
+        "diverse_feed": "medium",
+        "trust_preservation": "hard",
+        "easy": "easy",
+        "medium": "medium",
+        "hard": "hard",
+    }
+    task = TASK_MAP.get(raw, "medium")
+
+    try:
         obs = env.reset(task)
-
-        return {
-            "observation": obs.model_dump()
-        }
-
+        return {"observation": obs.model_dump()}
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"reset() failed: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"reset() failed: {e}")
 
 @app.post("/step")
 def step(req: StepRequest):
