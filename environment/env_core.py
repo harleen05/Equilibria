@@ -61,12 +61,13 @@ class AttentionEconomyEnv:
         self.engagement_history: List[float] = []
         self.done = False
         self.task_id = None
+        self.consecutive_pauses: int = 0   # tracks pause spamming
 
     # ─────────────────────────────
     # RESET
     # ─────────────────────────────
 
-    def reset(self, task_id: str = "medium") -> Observation:
+    def reset(self, task_id: str = "medium", seed: Optional[int] = None) -> Observation:
         task_cfg, user = get_task(task_id)
 
         self.user = user
@@ -80,6 +81,10 @@ class AttentionEconomyEnv:
         self.reward_fn = RewardFunction(task_cfg.reward_weights)
 
         self.engagement_history = []
+        self.consecutive_pauses = 0
+
+        # Re-seed the simulation engine for reproducibility
+        self.engine = SimulationEngine(seed=seed)
 
         return self._get_observation()
 
@@ -127,6 +132,12 @@ class AttentionEconomyEnv:
         self.user = updated_user
         self.step_count += 1
 
+        # Track consecutive pauses for exploit prevention
+        if action.action_type == "pause_session":
+            self.consecutive_pauses += 1
+        else:
+            self.consecutive_pauses = 0
+
         if content:
           self.history.append(content.content_id)
 
@@ -140,6 +151,10 @@ class AttentionEconomyEnv:
         addiction_risk=self.user.addiction_risk,
         diversity_score=diagnostics["diversity_score"],
     )
+
+        # Hard penalty for spamming pause — more than 2 consecutive = diminishing returns
+        if self.consecutive_pauses > 2:
+            reward = max(0.0, reward - 0.15 * (self.consecutive_pauses - 2))
 
         self.engagement_history.append(engagement)
 

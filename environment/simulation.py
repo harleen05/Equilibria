@@ -5,6 +5,7 @@ Fully deterministic state transition and reward computation.
 
 from __future__ import annotations
 import math
+import numpy as np
 from typing import Dict, List, Tuple, Optional
 from models import UserState, ContentItem, Action
 
@@ -21,6 +22,9 @@ FATIGUE_DECAY = 0.03
 
 
 class SimulationEngine:
+
+    def __init__(self, seed: Optional[int] = None):
+        self.rng = np.random.default_rng(seed)
 
     # ── Interest Match ──────────────────────────────────────────────────
     @staticmethod
@@ -91,7 +95,7 @@ class SimulationEngine:
     ) -> float:
         f = user.fatigue
         if action_type == "pause_session":
-            f -= 0.20
+            f -= 0.15          # recovery, but costs something — not a free reset
         elif action_type == "diversify_feed":
             f -= 0.10
         elif content is not None:
@@ -111,7 +115,7 @@ class SimulationEngine:
     ) -> float:
         t = user.trust
         if action_type == "pause_session":
-            t += 0.05
+            t += 0.01          # minimal trust gain — pausing isn't a trust-building activity
         elif action_type == "diversify_feed":
             t += 0.02
         elif action_type == "explore_new_topic":
@@ -133,7 +137,7 @@ class SimulationEngine:
     ) -> float:
         s = user.satisfaction
         if action_type in ("pause_session", "diversify_feed"):
-            s -= 0.01
+            s -= 0.08          # pausing repeatedly tanks satisfaction — user wants content
         elif content is not None:
             engagement_quality = (
                 interest_match
@@ -180,8 +184,8 @@ class SimulationEngine:
         return max(0.0, min(b, 1.0))
 
     # ── Engagement Signal ────────────────────────────────────────────────
-    @staticmethod
     def compute_engagement(
+        self,
         content: ContentItem,
         user: UserState,
         interest_match: float,
@@ -203,7 +207,9 @@ class SimulationEngine:
         relevance_weight = max(interest_match, 0.3 * content.addictiveness)
 
         eng = base * relevance_weight * addiction_amp * (0.5 + 0.5 * novelty_factor) * fatigue_drag
-        return min(eng, 1.0)
+        # Small stochastic noise — makes RL necessary, models real user variance
+        noise = self.rng.normal(0.0, 0.02)
+        return float(np.clip(eng + noise, 0.0, 1.0))
 
     # ── Full Step Transition ─────────────────────────────────────────────
     def apply_transition(

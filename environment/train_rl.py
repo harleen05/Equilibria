@@ -181,7 +181,7 @@ def train_task(
         })
         model.verbose = 1
     else:
-        model = PPO("MlpPolicy", vec_env, **PPO_KWARGS)
+        model = PPO("MlpPolicy", vec_env, **PPO_KWARGS, seed=42)
 
     # ── Train ─────────────────────────────────────────────────────────────
     t0 = time.time()

@@ -1,15 +1,10 @@
 """
 eval_rl.py — Evaluation script for trained PPO agents.
 
-Loads a saved model and runs one full episode, printing step-by-step
-actions and rewards in the same format as demo.py for easy comparison.
-
 Usage:
-    python eval_rl.py                          # evaluate medium (default)
     python eval_rl.py --task easy
-    python eval_rl.py --task hard
-    python eval_rl.py --task medium --model models/ppo_medium_final
-    python eval_rl.py --compare                # run heuristic + PPO side-by-side
+    python eval_rl.py --task hard --compare       # heuristic + random + PPO
+    python eval_rl.py --task medium --n_eval 20   # mean ± std over 20 episodes
 """
 
 from __future__ import annotations
@@ -19,14 +14,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 from stable_baselines3 import PPO
+from typing import Optional
 
-from rl_wrapper import AttentionEnvWrapper, ALL_CONTENT_IDS, META_ACTIONS, N_CONTENT
+from rl_wrapper import AttentionEnvWrapper, ALL_CONTENT_IDS, N_CONTENT
 from env_core import AttentionEconomyEnv
 from models import Action
 
 
 # ─────────────────────────────────────────────
-# Default model paths
+# Model paths
 # ─────────────────────────────────────────────
 
 DEFAULT_MODEL_PATHS = {
@@ -34,7 +30,6 @@ DEFAULT_MODEL_PATHS = {
     "medium": "models/best/medium/best_model",
     "hard":   "models/best/hard/best_model",
 }
-
 FALLBACK_MODEL_PATHS = {
     "easy":   "models/ppo_easy_final",
     "medium": "models/ppo_medium_final",
@@ -43,109 +38,186 @@ FALLBACK_MODEL_PATHS = {
 
 
 # ─────────────────────────────────────────────
-# PPO Evaluation
+# Single episode runners
 # ─────────────────────────────────────────────
 
-def evaluate_ppo(task_id: str, model_path: Optional[str] = None) -> dict:
-    """
-    Run one deterministic episode using the trained PPO model.
-    Returns the episode grade dict.
-    """
-    # Resolve model path
-    if model_path is None:
-        model_path = DEFAULT_MODEL_PATHS.get(task_id, "")
-        if not os.path.exists(model_path + ".zip"):
-            model_path = FALLBACK_MODEL_PATHS.get(task_id, "")
-    if not os.path.exists(model_path + ".zip"):
-        raise FileNotFoundError(
-            f"No trained model found at '{model_path}.zip'.\n"
-            f"Run: python train_rl.py --task {task_id}"
-        )
-
-    env = AttentionEnvWrapper(task_id=task_id)
-    model = PPO.load(model_path, env=env)
-
-    obs, _ = env.reset()
-
-    print(f"\n{'═' * 62}")
-    print(f"  PPO AGENT  |  TASK: {task_id.upper()}  |  model: {os.path.basename(model_path)}")
-    print(f"{'═' * 62}")
-    print(f"  {'Step':>4}  {'Action':<22}  {'R':>7}  {'Trust':>6}  {'Fatigue':>7}  {'Sat':>5}")
-    print(f"  {'─' * 57}")
-
-    total_reward = 0.0
+def _run_ppo_episode(env: AttentionEnvWrapper, model: PPO, seed: int) -> dict:
+    obs, _ = env.reset(seed=seed)
+    done = False
     final_info = {}
-    step = 0
-
-    while True:
+    while not done:
         action_int, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(int(action_int))
-
-        step += 1
-        total_reward += reward
+        obs, _, terminated, truncated, info = env.step(int(action_int))
+        done = terminated or truncated
         final_info = info
+    return final_info.get("episode_grade", {})
 
-        # Human-readable label
-        label = env.get_action_label(int(action_int))
-        if len(label) > 20:
-            label = label[:19] + "…"
 
-        raw = env._last_obs
-        print(
-            f"  {step:>4}  {label:<22}  "
-            f"{reward:.5f}  {raw.visible_trust:.4f}  "
-            f"{raw.visible_fatigue:.5f}  {raw.visible_satisfaction:.3f}"
-        )
+def _run_heuristic_episode(task_id: str, seed: int) -> dict:
+    env = AttentionEconomyEnv()
+    obs = env.reset(task_id, seed=seed)
+    done = False
+    final_info = {}
+    while not done:
+        action = _heuristic(obs)
+        obs, _, done, info = env.step(action)
+        final_info = info
+    return final_info.get("episode_grade", {})
 
-        if terminated or truncated:
-            break
 
-    _print_grade(final_info, total_reward, step)
+def _run_random_episode(task_id: str, seed: int) -> dict:
+    env = AttentionEnvWrapper(task_id=task_id)
+    rng = np.random.default_rng(seed)
+    obs, _ = env.reset(seed=seed)
+    done = False
+    final_info = {}
+    while not done:
+        # Random action restricted to valid (allowed) content only
+        valid = np.where(env.action_masks())[0]
+        action = int(rng.choice(valid))
+        obs, _, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        final_info = info
     env.close()
     return final_info.get("episode_grade", {})
 
 
 # ─────────────────────────────────────────────
-# Heuristic Baseline (same as demo.py)
+# Multi-episode evaluation (mean ± std)
 # ─────────────────────────────────────────────
 
-def evaluate_heuristic(task_id: str) -> dict:
-    """Run the rule-based heuristic agent for comparison."""
-    env = AttentionEconomyEnv()
-    obs = env.reset(task_id)
+def evaluate_ppo(task_id: str, model_path: Optional[str] = None,
+                 n_eval: int = 1, verbose: bool = True) -> dict:
+    model_path = _resolve_model_path(task_id, model_path)
+    env = AttentionEnvWrapper(task_id=task_id)
+    model = PPO.load(model_path, env=env)
 
-    print(f"\n{'═' * 62}")
-    print(f"  HEURISTIC  |  TASK: {task_id.upper()}")
-    print(f"{'═' * 62}")
-    print(f"  {'Step':>4}  {'Action':<22}  {'R':>7}  {'Trust':>6}  {'Fatigue':>7}  {'Sat':>5}")
-    print(f"  {'─' * 57}")
+    if verbose and n_eval == 1:
+        # Single episode: print step-by-step like demo.py
+        obs, _ = env.reset(seed=42)
+        print(f"\n{'═'*62}")
+        print(f"  PPO AGENT  |  TASK: {task_id.upper()}  |  {os.path.basename(model_path)}")
+        print(f"{'═'*62}")
+        print(f"  {'Step':>4}  {'Action':<22}  {'R':>7}  {'Trust':>6}  {'Fatigue':>7}  {'Sat':>5}")
+        print(f"  {'─'*57}")
+        done, step, total_r, final_info = False, 0, 0.0, {}
+        while not done:
+            action_int, _ = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, info = env.step(int(action_int))
+            done = terminated or truncated
+            step += 1; total_r += reward; final_info = info
+            raw = env._last_obs
+            label = env.get_action_label(int(action_int))[:20]
+            print(f"  {step:>4}  {label:<22}  {reward:.5f}  "
+                  f"{raw.visible_trust:.4f}  {raw.visible_fatigue:.5f}  "
+                  f"{raw.visible_satisfaction:.3f}")
+        _print_grade(final_info, total_r, step)
+        env.close()
+        return final_info.get("episode_grade", {})
 
-    total_reward = 0.0
-    final_info = {}
-    step = 0
+    # Multi-episode: collect stats
+    grades = [_run_ppo_episode(env, model, seed=i) for i in range(n_eval)]
+    env.close()
+    return _aggregate(grades)
 
-    while True:
-        action = _heuristic(obs)
-        obs, reward, done, info = env.step(action)
 
-        step += 1
-        total_reward += reward
-        final_info = info
+def evaluate_heuristic(task_id: str, n_eval: int = 1, verbose: bool = True) -> dict:
+    if verbose and n_eval == 1:
+        env = AttentionEconomyEnv()
+        obs = env.reset(task_id, seed=42)
+        print(f"\n{'═'*62}")
+        print(f"  HEURISTIC  |  TASK: {task_id.upper()}")
+        print(f"{'═'*62}")
+        print(f"  {'Step':>4}  {'Action':<22}  {'R':>7}  {'Trust':>6}  {'Fatigue':>7}  {'Sat':>5}")
+        print(f"  {'─'*57}")
+        done, step, total_r, final_info = False, 0, 0.0, {}
+        while not done:
+            action = _heuristic(obs)
+            obs, reward, done, info = env.step(action)
+            step += 1; total_r += reward; final_info = info
+            label = (action.content_id or action.action_type)[:20]
+            print(f"  {step:>4}  {label:<22}  {reward:.5f}  "
+                  f"{obs.visible_trust:.4f}  {obs.visible_fatigue:.5f}  "
+                  f"{obs.visible_satisfaction:.3f}")
+        _print_grade(final_info, total_r, step)
+        return final_info.get("episode_grade", {})
 
-        label = action.content_id if action.content_id else action.action_type
-        if len(label) > 20:
-            label = label[:19] + "…"
+    grades = [_run_heuristic_episode(task_id, seed=i) for i in range(n_eval)]
+    return _aggregate(grades)
 
-        print(
-            f"  {step:>4}  {label:<22}  "
-            f"{reward:.5f}  {obs.visible_trust:.4f}  "
-            f"{obs.visible_fatigue:.5f}  {obs.visible_satisfaction:.3f}"
-        )
-        if done:
-            break
 
-    _print_grade(final_info, total_reward, step)
-    return final_info.get("episode_grade", {})
+def evaluate_random(task_id: str, n_eval: int = 20) -> dict:
+    grades = [_run_random_episode(task_id, seed=i) for i in range(n_eval)]
+    return _aggregate(grades)
+
+
+# ─────────────────────────────────────────────
+# Compare: Random vs Heuristic vs PPO
+# ─────────────────────────────────────────────
+
+def compare(task_id: str, model_path: Optional[str] = None, n_eval: int = 20):
+    print(f"\n{'#'*65}")
+    print(f"  COMPARISON [{task_id.upper()}]  —  {n_eval} episodes each  (mean ± std)")
+    print(f"{'#'*65}")
+
+    print(f"\n  Running random agent   ({n_eval} eps)...", end=" ", flush=True)
+    r_grade = evaluate_random(task_id, n_eval)
+    print("done")
+
+    print(f"  Running heuristic      ({n_eval} eps)...", end=" ", flush=True)
+    h_grade = evaluate_heuristic(task_id, n_eval=n_eval, verbose=False)
+    print("done")
+
+    print(f"  Running PPO            ({n_eval} eps)...", end=" ", flush=True)
+    p_grade = evaluate_ppo(task_id, model_path, n_eval=n_eval, verbose=False)
+    print("done")
+
+    metrics = ["final_score", "avg_engagement", "final_trust", "final_satisfaction"]
+    print(f"\n{'─'*65}")
+    print(f"  {'Metric':<22}  {'Random':>14}  {'Heuristic':>14}  {'PPO':>14}")
+    print(f"  {'─'*62}")
+
+    for m in metrics:
+        def fmt(g): return f"{g.get(m+'_mean', 0):.3f}±{g.get(m+'_std', 0):.3f}"
+        r_val = r_grade.get(m + "_mean", 0)
+        h_val = h_grade.get(m + "_mean", 0)
+        p_val = p_grade.get(m + "_mean", 0)
+        flag = "▲" if p_val > h_val + 0.005 else ("▼" if p_val < h_val - 0.005 else "≈")
+        print(f"  {m:<22}  {fmt(r_grade):>14}  {fmt(h_grade):>14}  {fmt(p_grade):>14}  {flag}")
+
+    print(f"\n  PPO vs Heuristic improvement: "
+          f"{(p_grade.get('final_score_mean',0) - h_grade.get('final_score_mean',0)):+.3f} final_score")
+    print(f"  PPO vs Random improvement:    "
+          f"{(p_grade.get('final_score_mean',0) - r_grade.get('final_score_mean',0)):+.3f} final_score")
+
+
+# ─────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────
+
+def _aggregate(grades: list) -> dict:
+    """Compute mean ± std across episodes for all grade metrics."""
+    if not grades:
+        return {}
+    keys = grades[0].keys()
+    result = {}
+    for k in keys:
+        vals = [g.get(k, 0.0) for g in grades]
+        result[k] = round(float(np.mean(vals)), 4)
+        result[k + "_mean"] = round(float(np.mean(vals)), 4)
+        result[k + "_std"]  = round(float(np.std(vals)),  4)
+    return result
+
+
+def _resolve_model_path(task_id: str, model_path: Optional[str]) -> str:
+    if model_path is None:
+        model_path = DEFAULT_MODEL_PATHS.get(task_id, "")
+    if not os.path.exists(model_path + ".zip"):
+        model_path = FALLBACK_MODEL_PATHS.get(task_id, "")
+    if not os.path.exists(model_path + ".zip"):
+        raise FileNotFoundError(
+            f"No model at '{model_path}.zip'. Run: python train_rl.py --task {task_id}")
+    return model_path
 
 
 def _heuristic(obs) -> Action:
@@ -153,88 +225,48 @@ def _heuristic(obs) -> Action:
         return Action(action_type="pause_session")
     if obs.visible_boredom > 0.50:
         return Action(action_type="diversify_feed")
-
     dominant = max(obs.interest_distribution, key=obs.interest_distribution.get)
-    recent   = set(obs.recent_content_ids)
+    recent = set(obs.recent_content_ids)
     best_item, best_score = None, -1.0
-
     for item in obs.available_content:
         if item.content_id in recent:
             continue
-        match   = item.topic_relevance.get(dominant, 0.0)
+        match = item.topic_relevance.get(dominant, 0.0)
         ethical = (1.0 - item.manipulation_score) * (1.0 - item.addictiveness)
-        score   = match * ethical
+        score = match * ethical
         if score > best_score:
-            best_score = score
-            best_item  = item
-
+            best_score, best_item = score, item
     if best_item is None:
         return Action(action_type="explore_new_topic", topic=dominant)
     return Action(action_type="recommend", content_id=best_item.content_id)
 
 
 def _print_grade(info: dict, total_reward: float, steps: int):
-    print(f"\n  {'─' * 57}")
-    print(f"  Total reward (sum)  : {total_reward:.4f}  over {steps} steps")
+    print(f"\n  {'─'*57}")
+    print(f"  Total reward : {total_reward:.4f}  over {steps} steps")
     if "episode_grade" in info:
         g = info["episode_grade"]
-        print(f"  Final Score         : {g.get('final_score', 0):.4f}")
-        print(f"  └─ avg_engagement   : {g.get('avg_engagement', 0):.4f}")
-        print(f"  └─ final_trust      : {g.get('final_trust', 0):.4f}")
-        print(f"  └─ final_satisf.    : {g.get('final_satisfaction', 0):.4f}")
-    if "termination_reason" in info:
-        print(f"  Termination         : {info['termination_reason']}")
-
-
-# ─────────────────────────────────────────────
-# Side-by-side comparison
-# ─────────────────────────────────────────────
-
-def compare(task_id: str, model_path: Optional[str] = None):
-    print(f"\n{'#'*62}")
-    print(f"  COMPARISON: Heuristic vs PPO  [{task_id.upper()}]")
-    print(f"{'#'*62}")
-
-    h_grade = evaluate_heuristic(task_id)
-    p_grade = evaluate_ppo(task_id, model_path)
-
-    print(f"\n{'─'*62}")
-    print(f"  SUMMARY ({task_id.upper()})")
-    print(f"{'─'*62}")
-    metrics = ["final_score", "avg_engagement", "final_trust", "final_satisfaction"]
-    print(f"  {'Metric':<22}  {'Heuristic':>10}  {'PPO':>10}  {'Δ':>8}")
-    print(f"  {'─'*57}")
-    for m in metrics:
-        h = h_grade.get(m, 0.0)
-        p = p_grade.get(m, 0.0)
-        delta = p - h
-        flag = "▲" if delta > 0.005 else ("▼" if delta < -0.005 else "≈")
-        print(f"  {m:<22}  {h:>10.4f}  {p:>10.4f}  {flag} {abs(delta):>5.4f}")
+        print(f"  Final Score  : {g.get('final_score', 0):.4f}")
+        print(f"  └─ engagement: {g.get('avg_engagement', 0):.4f}")
+        print(f"  └─ trust     : {g.get('final_trust', 0):.4f}")
+        print(f"  └─ satisf.   : {g.get('final_satisfaction', 0):.4f}")
 
 
 # ─────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────
 
-from typing import Optional
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate PPO agent on AttentionEconomyEnv")
-    parser.add_argument(
-        "--task", choices=["easy", "medium", "hard"], default="medium",
-        help="Task to evaluate (default: medium)"
-    )
-    parser.add_argument(
-        "--model", type=str, default=None,
-        help="Path to model (no .zip). Defaults to best_model for the task."
-    )
-    parser.add_argument(
-        "--compare", action="store_true",
-        help="Run heuristic and PPO side-by-side and print a comparison table"
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", choices=["easy", "medium", "hard"], default="medium")
+    parser.add_argument("--model", type=str, default=None)
+    parser.add_argument("--compare", action="store_true",
+                        help="Random vs Heuristic vs PPO with mean±std")
+    parser.add_argument("--n_eval", type=int, default=20,
+                        help="Episodes per agent in --compare mode (default: 20)")
     args = parser.parse_args()
 
     if args.compare:
-        compare(args.task, args.model)
+        compare(args.task, args.model, n_eval=args.n_eval)
     else:
-        evaluate_ppo(args.task, args.model)
+        evaluate_ppo(args.task, args.model, n_eval=1, verbose=True)
