@@ -48,11 +48,10 @@ from openai import OpenAI   # mandatory per submission rules
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "").rstrip("/")
 API_KEY:      str = os.environ.get("API_KEY", os.environ.get("HF_TOKEN", ""))
 MODEL_NAME:   str = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-ENV_URL:      str = os.environ.get("ENV_URL", "http://localhost:7860")
+ENV_URL:      str = os.environ.get("ENV_URL", "http://localhost:7860").rstrip("/")
 
 BENCHMARK = "attention-economy-env"
 
-# Task constants aligned with Person 1's tasks.py
 TASK_CONFIG: Dict[str, Dict[str, Any]] = {
     "easy":   {"max_steps": 10, "success_threshold": 0.60},
     "medium": {"max_steps": 15, "success_threshold": 0.55},
@@ -60,7 +59,6 @@ TASK_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 TASKS = ["easy", "medium", "hard"]
 
-# Content classification for heuristic fallback
 SAFE_CONTENT = [
     "rel_sci_01", "rel_tech_01", "rel_fin_01", "rel_hist_01",
     "rel_health_01", "rel_health_02", "rel_news_01", "rel_env_01",
@@ -76,9 +74,7 @@ MANIPULATIVE_CONTENT = [
 ]
 
 # ─────────────────────────────────────────────────────────
-# OPENAI CLIENT  — mandatory per submission rules
-# Initialised lazily so --dry-run works without credentials
-# Uses API_KEY injected by validator (not HF_TOKEN)
+# OPENAI CLIENT
 # ─────────────────────────────────────────────────────────
 
 _client: Optional[OpenAI] = None
@@ -123,8 +119,7 @@ recommend    : {"action_type": "recommend", "content_id": "rel_tech_01", "reason
 other action : {"action_type": "pause_session", "reasoning": "fatigue is 0.72"}"""
 
 # ─────────────────────────────────────────────────────────
-# STRICT LOG HELPERS  — field names and order are fixed
-# ALL output goes to stdout so the eval harness captures it
+# LOG HELPERS
 # ─────────────────────────────────────────────────────────
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -159,33 +154,30 @@ def log_end(success: bool, steps: int, score: float) -> None:
 # ─────────────────────────────────────────────────────────
 
 def call_reset(task_id: str) -> Dict[str, Any]:
-    resp = requests.post(
-        f"{ENV_URL}/reset",
-        json={"task": task_id},
-        timeout=30,
-    )
+    """POST /reset — sends both 'task' and 'task_id' for compatibility."""
+    payload = {"task": task_id, "task_id": task_id}
+    print(f"[DEBUG] POST {ENV_URL}/reset payload={payload}", file=sys.stderr)
+    resp = requests.post(f"{ENV_URL}/reset", json=payload, timeout=30)
+    print(f"[DEBUG] reset status={resp.status_code} body={resp.text[:300]}", file=sys.stderr)
     resp.raise_for_status()
     return resp.json()
 
 def call_step(action: Dict[str, Any]) -> Dict[str, Any]:
-    resp = requests.post(
-        f"{ENV_URL}/step",
-        json=action,
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    """POST /step — tries wrapped format first, then flat."""
+    # Try flat format (what our server expects)
+    resp = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
+    if resp.ok:
+        return resp.json()
+    # Try wrapped format as fallback
+    resp2 = requests.post(f"{ENV_URL}/step", json={"action": action}, timeout=30)
+    resp2.raise_for_status()
+    return resp2.json()
 
 # ─────────────────────────────────────────────────────────
-# LLM AGENT  — uses OpenAI client as required
+# LLM AGENT
 # ─────────────────────────────────────────────────────────
 
-def _build_user_message(
-    obs: Dict[str, Any],
-    step: int,
-    task: str,
-    last_reward: float,
-) -> str:
+def _build_user_message(obs: Dict[str, Any], step: int, task: str, last_reward: float) -> str:
     content_pool = obs.get("available_content", [])
 
     def _field(item, key, default=None):
@@ -214,19 +206,8 @@ def _build_user_message(
     )
 
 
-def call_llm(
-    obs: Dict[str, Any],
-    step: int,
-    task: str,
-    last_reward: float,
-) -> Dict[str, Any]:
-    """
-    Call the LLM via OpenAI client (mandatory per submission rules).
-    Returns a parsed action dict.
-    Falls back to smart_policy on any exception.
-    """
+def call_llm(obs: Dict[str, Any], step: int, task: str, last_reward: float) -> Dict[str, Any]:
     user_msg = _build_user_message(obs, step, task, last_reward)
-
     response = get_client().chat.completions.create(
         model=MODEL_NAME,
         messages=[
@@ -236,19 +217,16 @@ def call_llm(
         temperature=0.3,
         max_tokens=200,
     )
-
     raw = response.choices[0].message.content or ""
     return _parse_llm_response(raw, obs)
 
 
 def _parse_llm_response(raw: str, obs: Dict[str, Any]) -> Dict[str, Any]:
-    """Parse LLM JSON output with three fallback strategies."""
     def _field(item, key, default=None):
         return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
 
     available_ids = [_field(c, "content_id") for c in obs.get("available_content", [])]
 
-    # Strategy 1: clean and parse JSON
     try:
         clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
         parsed = json.loads(clean.strip())
@@ -263,30 +241,21 @@ def _parse_llm_response(raw: str, obs: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Strategy 2: regex extract content_id from raw text
     m = re.search(r'"content_id"\s*:\s*"([^"]+)"', raw)
     if m and m.group(1) in available_ids:
-        return {"action_type": "recommend", "content_id": m.group(1),
-                "reasoning": "regex-extracted"}
+        return {"action_type": "recommend", "content_id": m.group(1), "reasoning": "regex-extracted"}
 
-    # Strategy 3: known safe id anywhere in text
     for cid in SAFE_CONTENT:
         if cid in raw and cid in available_ids:
-            return {"action_type": "recommend", "content_id": cid,
-                    "reasoning": "substring-extracted"}
+            return {"action_type": "recommend", "content_id": cid, "reasoning": "substring-extracted"}
 
-    # Strategy 4: heuristic (last resort)
     return _smart_policy(obs)
 
 # ─────────────────────────────────────────────────────────
-# SMART POLICY  — heuristic fallback, never the primary path
+# SMART POLICY — heuristic fallback
 # ─────────────────────────────────────────────────────────
 
 def _smart_policy(obs: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Rule-based fallback. Mirrors demo.py heuristic agent.
-    Used only when LLM call fails or parse fails entirely.
-    """
     def _field(item, key, default=None):
         return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
 
@@ -316,30 +285,23 @@ def _smart_policy(obs: Dict[str, Any]) -> Dict[str, Any]:
         if cid in recent or manip > 0.40 or addict > 0.60:
             continue
 
-        score = (
-            0.50 * rel.get(dominant, 0)
-            + 0.20 * edu
-            - 0.20 * addict
-            - 0.30 * manip
-        )
+        score = 0.50 * rel.get(dominant, 0) + 0.20 * edu - 0.20 * addict - 0.30 * manip
         if score > best_score:
             best_score, best_id = score, cid
 
     if best_id:
-        return {"action_type": "recommend", "content_id": best_id,
-                "reasoning": "fallback: heuristic best pick"}
+        return {"action_type": "recommend", "content_id": best_id, "reasoning": "fallback: heuristic best pick"}
 
     for item in obs.get("available_content", []):
         cid   = _field(item, "content_id", "")
         manip = _field(item, "manipulation_score", 0)
         if cid and manip < 0.30:
-            return {"action_type": "recommend", "content_id": cid,
-                    "reasoning": "fallback: last resort"}
+            return {"action_type": "recommend", "content_id": cid, "reasoning": "fallback: last resort"}
 
     return {"action_type": "explore_new_topic", "reasoning": "fallback: no content available"}
 
 # ─────────────────────────────────────────────────────────
-# ACTION → CANONICAL LOG STRING
+# ACTION STRING
 # ─────────────────────────────────────────────────────────
 
 def _action_str(action: Dict[str, Any]) -> str:
@@ -349,7 +311,7 @@ def _action_str(action: Dict[str, Any]) -> str:
     return atype
 
 # ─────────────────────────────────────────────────────────
-# DRY-RUN FAKE ENV  — validates log format without any calls
+# DRY-RUN FAKE ENV
 # ─────────────────────────────────────────────────────────
 
 def _fake_reset(task_id: str) -> Dict[str, Any]:
@@ -374,18 +336,12 @@ def _fake_reset(task_id: str) -> Dict[str, Any]:
                             "recent_content_ids": [], "recent_diversity_score": 1.0,
                             "session_length": 0, "step_count": 0, "task_id": task_id}}
 
-def _fake_step(
-    action: Dict[str, Any],
-    step_num: int,
-    max_steps: int,
-    obs: Dict[str, Any],
-) -> Dict[str, Any]:
+def _fake_step(action: Dict[str, Any], step_num: int, max_steps: int, obs: Dict[str, Any]) -> Dict[str, Any]:
     import random
     rng = random.Random(step_num * 17 + abs(hash(action.get("content_id", action.get("action_type", "")))) % 997)
 
     atype = action.get("action_type", "recommend")
     cid   = action.get("content_id", "")
-
     f = obs.get("visible_fatigue", 0.1)
     t = obs.get("visible_trust", 0.8)
     s = obs.get("visible_satisfaction", 0.5)
@@ -405,7 +361,6 @@ def _fake_step(
 
     reward = round(rng.uniform(0.35, 0.75), 4)
     done   = step_num >= max_steps
-
     new_obs = dict(obs)
     new_obs.update({
         "visible_fatigue":      round(f, 4),
@@ -414,7 +369,6 @@ def _fake_step(
         "step_count":           step_num,
         "recent_content_ids":   (obs.get("recent_content_ids", []) + ([cid] if cid else []))[-5:],
     })
-
     eng  = round(rng.uniform(0.40, 0.75), 4)
     info: Dict[str, Any] = {
         "step": step_num, "task": obs.get("task_id", "unknown"),
@@ -429,18 +383,13 @@ def _fake_step(
             "final_trust":        round(t, 4),
             "final_satisfaction": round(s, 4),
         }
-
     return {"observation": new_obs, "reward": reward, "done": done, "info": info}
 
 # ─────────────────────────────────────────────────────────
 # EPISODE RUNNER
 # ─────────────────────────────────────────────────────────
 
-def run_episode(
-    task_id: str,
-    max_steps_override: int = 0,
-    dry_run: bool = False,
-) -> Dict[str, Any]:
+def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False) -> Dict[str, Any]:
     cfg       = TASK_CONFIG[task_id]
     max_steps = max_steps_override or cfg["max_steps"]
     threshold = cfg["success_threshold"]
@@ -450,9 +399,9 @@ def run_episode(
     try:
         reset_data = _fake_reset(task_id) if dry_run else call_reset(task_id)
     except Exception as e:
+        print(f"[ERROR] reset failed for task={task_id}: {e}", file=sys.stderr)
         log_end(success=False, steps=0, score=0.0)
-        return {"score": 0.0, "success": False, "steps": 0,
-                "rewards": [], "episode_grade": {}}
+        return {"score": 0.0, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
 
     obs            = reset_data.get("observation", reset_data)
     rewards:       List[float] = []
@@ -489,8 +438,8 @@ def run_episode(
                 else call_step(env_action)
             )
         except Exception as e:
-            log_step(step_num, action_str, 0.0, True,
-                     error=f"step_error:{str(e)[:60]}")
+            print(f"[ERROR] step failed at step={step_num}: {e}", file=sys.stderr)
+            log_step(step_num, action_str, 0.0, True, error=f"step_error:{str(e)[:60]}")
             done = True
             break
 
@@ -514,39 +463,33 @@ def run_episode(
 
     score   = max(0.0, min(score, 1.0))
     success = score >= threshold
-
     log_end(success=success, steps=step_num, score=score)
 
-    return {
-        "score":         score,
-        "success":       success,
-        "steps":         step_num,
-        "rewards":       rewards,
-        "episode_grade": episode_grade,
-    }
+    return {"score": score, "success": success, "steps": step_num,
+            "rewards": rewards, "episode_grade": episode_grade}
 
 # ─────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="AttentionEconomyEnv baseline inference agent"
-    )
+    parser = argparse.ArgumentParser(description="AttentionEconomyEnv baseline inference agent")
     parser.add_argument("--task", choices=["easy", "medium", "hard", "all"], default="all")
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    # Debug: show injected env vars
+    print(f"[DEBUG] ENV_URL={ENV_URL}",             file=sys.stderr)
+    print(f"[DEBUG] API_BASE_URL={API_BASE_URL}",   file=sys.stderr)
+    print(f"[DEBUG] MODEL_NAME={MODEL_NAME}",       file=sys.stderr)
+    print(f"[DEBUG] API_KEY={'SET' if API_KEY else 'NOT SET'}", file=sys.stderr)
+
     if not args.dry_run:
-        # Validator injects API_BASE_URL + API_KEY — fall back to dry-run only if both missing
-        has_base = bool(os.environ.get("API_BASE_URL"))
-        has_key  = bool(os.environ.get("API_KEY") or os.environ.get("HF_TOKEN"))
+        has_base = bool(API_BASE_URL)
+        has_key  = bool(API_KEY)
         if not has_base or not has_key:
-            print(
-                "[WARN] API_BASE_URL or API_KEY not set — falling back to dry-run mode",
-                file=sys.stderr,
-            )
+            print("[WARN] API_BASE_URL or API_KEY not set — falling back to dry-run mode", file=sys.stderr)
             args.dry_run = True
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
@@ -574,10 +517,7 @@ def main() -> None:
             f"{g.get('final_satisfaction',0):.2f}"
             if g else "—"
         )
-        print(
-            f"  {task_id:<10} {r['score']:<10.4f} {status:<5} {r['steps']:<7} {detail}",
-            file=sys.stderr,
-        )
+        print(f"  {task_id:<10} {r['score']:<10.4f} {status:<5} {r['steps']:<7} {detail}", file=sys.stderr)
 
     overall = sum(r["score"] for r in results.values()) / max(len(results), 1)
     print(f"\n  Overall avg score: {overall:.4f}", file=sys.stderr)
