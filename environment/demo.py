@@ -5,8 +5,8 @@ demo.py — Runs all three tasks with a heuristic agent to verify correctness.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from env_core import AttentionEconomyEnv
-from models import Action
+from environment.env_core import AttentionEconomyEnv
+from environment.models import Action
 
 
 def heuristic_agent(obs) -> Action:

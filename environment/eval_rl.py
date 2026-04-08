@@ -16,9 +16,9 @@ import numpy as np
 from stable_baselines3 import PPO
 from typing import Optional
 
-from rl_wrapper import AttentionEnvWrapper, ALL_CONTENT_IDS, N_CONTENT
-from env_core import AttentionEconomyEnv
-from models import Action
+from environment.rl_wrapper import AttentionEnvWrapper, ALL_CONTENT_IDS, N_CONTENT
+from environment.env_core import AttentionEconomyEnv
+from environment.models import Action
 
 
 # ─────────────────────────────────────────────

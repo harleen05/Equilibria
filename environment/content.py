@@ -1,5 +1,5 @@
 from typing import List, Dict
-from models import ContentItem  # single source of truth — avoids duplicate class conflict
+from environment.models import ContentItem  # single source of truth — avoids duplicate class conflict
 import hashlib
 
 

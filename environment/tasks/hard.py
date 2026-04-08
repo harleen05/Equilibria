@@ -25,8 +25,8 @@ Expected optimal agent strategy:
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List
-from models import UserState
-from reward import HARD_WEIGHTS, RewardWeights
+from environment.models import UserState
+from environment.reward import HARD_WEIGHTS, RewardWeights
 
 
 @dataclass(frozen=True)

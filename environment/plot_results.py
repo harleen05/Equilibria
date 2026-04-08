@@ -23,9 +23,9 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from typing import Optional, List
 
-from rl_wrapper import AttentionEnvWrapper, N_CONTENT
-from env_core import AttentionEconomyEnv
-from models import Action
+from environment.rl_wrapper import AttentionEnvWrapper, N_CONTENT
+from environment.env_core import AttentionEconomyEnv
+from environment.models import Action
 from stable_baselines3 import PPO
 
 os.makedirs("results", exist_ok=True)

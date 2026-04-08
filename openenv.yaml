@@ -1,0 +1,58 @@
+name: attention-economy-env
+version: "0.1.0"
+description: >
+  Trains agents to recommend content while maximising user engagement
+  without compromising trust or well-being. A multi-objective RL benchmark
+  for ethical recommendation systems — modelled on real attention economy dynamics.
+
+tasks:
+  - id: easy_recommendation
+    difficulty: easy
+    max_steps: 15
+    description: >
+      Single dominant interest (technology 70%). Low fatigue sensitivity.
+      Straightforward interest matching with light ethical constraints.
+
+  - id: diverse_feed
+    difficulty: medium
+    max_steps: 20
+    description: >
+      Five active interests. Normal fatigue and trust sensitivity.
+      Diversity required to prevent boredom-driven reward decay.
+      Outrage content is a local maximum trap.
+
+  - id: trust_preservation
+    difficulty: hard
+    max_steps: 25
+    description: >
+      High addiction risk (0.40). Rapid trust decay (1.8x multiplier).
+      Full catalog including highly manipulative content.
+      Short-term engagement maximisation collapses trust within 3-5 steps.
+
+observation_space:
+  type: object
+  description: >
+    User state (visible_fatigue, visible_trust, visible_satisfaction, visible_boredom),
+    interest_distribution over topics, available_content pool with per-item
+    manipulation_score/addictiveness/educational_value/novelty,
+    recent_content_ids (last 5), recent_diversity_score, step_count, task_id.
+
+action_space:
+  type: object
+  description: >
+    action_type: one of [recommend, diversify_feed, explore_new_topic, pause_session].
+    content_id: required when action_type is recommend (string ID from available_content).
+
+reward_range: [0.0, 1.0]
+
+episode_grade:
+  formula: "0.40 * avg_engagement + 0.35 * final_trust + 0.25 * final_satisfaction"
+  description: >
+    Authoritative end-of-episode score returned in info["episode_grade"].
+    Partial credit awarded at every step via multi-objective reward function.
+
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  health: GET /health

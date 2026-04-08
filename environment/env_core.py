@@ -2,13 +2,13 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
-from models import (
+from environment.models import (
     Action, ContentItem, Observation, UserState
 )
-from content import get_full_catalog
-from simulation import SimulationEngine
-from reward import RewardFunction
-from tasks import get_task
+from environment.content import get_full_catalog
+from environment.simulation import SimulationEngine
+from environment.reward import RewardFunction
+from environment.tasks import get_task
 
 
 # ─────────────────────────────────────────────

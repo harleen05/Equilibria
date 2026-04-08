@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from models import UserState, ContentItem, Action
+from environment.models import UserState, ContentItem, Action
 
 
 # ─────────────────────────────────────────────

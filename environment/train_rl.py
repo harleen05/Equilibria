@@ -29,7 +29,7 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from rl_wrapper import AttentionEnvWrapper
+from environment.rl_wrapper import AttentionEnvWrapper
 
 
 # ─────────────────────────────────────────────

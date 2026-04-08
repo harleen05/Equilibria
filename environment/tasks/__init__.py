@@ -9,7 +9,7 @@ Usage:
 
 from __future__ import annotations
 from typing import Tuple
-from tasks import easy, medium, hard
+from environment.tasks import easy, medium, hard
 
 
 def get_task(task_id: str):

@@ -34,8 +34,8 @@ import gymnasium as gym
 from gymnasium import spaces
 from typing import Optional, Tuple, Dict, Any, List
 
-from env_core import AttentionEconomyEnv
-from models import Action, Observation
+from environment.env_core import AttentionEconomyEnv
+from environment.models import Action, Observation
 
 
 # ─────────────────────────────────────────────
