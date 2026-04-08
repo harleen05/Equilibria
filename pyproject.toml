@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "attention-economy-env"
+version = "0.1.0"
+description = "Multi-objective RL environment for ethical content recommendation"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["environment*"]
