@@ -156,7 +156,7 @@ def log_end(success: bool, steps: int, score: float) -> None:
 def call_reset(task_id: str) -> Dict[str, Any]:
     resp = requests.post(
         f"{ENV_URL}/reset",
-        json={"task_id": task_id},
+        json={"task": task_id},
         timeout=30,
     )
     resp.raise_for_status()
