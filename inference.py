@@ -90,6 +90,26 @@ For recommend: {"action_type": "recommend", "content_id": "rel_tech_01", "reason
 For other actions: {"action_type": "pause_session", "reasoning": "fatigue is 0.72"}"""
 
 # ──────────────────────────────────────────────
+# MEMORY TRACKER (NEW)
+# ──────────────────────────────────────────────
+def init_history():
+    return {
+        "trust_trend": [],
+        "fatigue_trend": [],
+        "recent_actions": []
+    }
+
+def is_trust_dropping(trend):
+    if len(trend) < 3:
+        return False
+    return trend[-1] < trend[-2] < trend[-3]
+
+def is_fatigue_spiking(trend):
+    if len(trend) < 3:
+        return False
+    return trend[-1] > trend[-2] > trend[-3]
+
+# ──────────────────────────────────────────────
 # LOGGING
 # ──────────────────────────────────────────────
 def log_start(task: str, env: str, model: str):
@@ -168,6 +188,77 @@ def _heuristic_action(observation: dict) -> dict:
             return {"action_type": "recommend", "content_id": cid, "reasoning": "last resort"}
 
     return {"action_type": "explore_new_topic", "reasoning": "absolute fallback"}
+
+# ──────────────────────────────────────────────
+# SMART POLICY (NEW — HARD TASK OPTIMIZED)
+# ──────────────────────────────────────────────
+def smart_policy(observation: dict, history: dict) -> dict:
+
+    fatigue = observation.get("visible_fatigue", 0)
+    trust   = observation.get("visible_trust", 0)
+    boredom = observation.get("visible_boredom", 0)
+
+    trust_trend   = history["trust_trend"]
+    fatigue_trend = history["fatigue_trend"]
+
+    recent_actions = history.get("recent_actions", [])
+    force_recommend = recent_actions.count("diversify_feed") >= 3
+
+    # 🚨 EMERGENCY CONTROL
+    if fatigue > 0.7 or is_fatigue_spiking(fatigue_trend):
+        return {"action_type": "pause_session", "reasoning": "fatigue control"}
+
+    if trust < 0.35 or is_trust_dropping(trust_trend):
+        return {"action_type": "explore_new_topic", "reasoning": "trust recovery"}
+
+    if boredom > 0.5 and not force_recommend and len(history["recent_actions"]) % 2 == 0:
+        return {"action_type": "diversify_feed", "reasoning": "controlled diversity"}
+
+    # 🎯 CONTENT SELECTION
+    interest_dist = observation.get("interest_distribution", {})
+    dominant = max(interest_dist, key=interest_dist.get) if interest_dist else "technology"
+
+    recent_list = observation.get("recent_content_ids", [])
+    recent = set(recent_list)
+
+    if len(set(recent_list)) < 3 and len(recent_list) >= 3:
+        return {"action_type": "diversify_feed", "reasoning": "low diversity fix"}
+
+    best_id = None
+    best_score = -1
+
+    for item in observation.get("available_content", []):
+        cid   = item.get("content_id")
+        manip = item.get("manipulation_score", 0)
+        addict= item.get("addictiveness", 0)
+        rel   = item.get("topic_relevance", {})
+        edu   = item.get("educational_value", 0)
+
+        # ❌ HARD FILTERS (VERY IMPORTANT)
+        if manip > 0.4:
+            continue
+        if trust < 0.6 and manip > 0.2:
+            continue
+        if addict > 0.6:
+            continue
+        if cid in recent:
+            continue
+
+        score = (
+            0.5 * rel.get(dominant, 0)
+            + 0.2 * edu
+            - 0.2 * addict
+            - 0.3 * manip
+        )
+
+        if score > best_score:
+            best_score = score
+            best_id = cid
+
+    if best_id:
+        return {"action_type": "recommend", "content_id": best_id, "reasoning": "safe optimized pick"}
+
+    return {"action_type": "diversify_feed", "reasoning": "fallback"}
 
 # ──────────────────────────────────────────────
 # LLM AGENT
@@ -342,6 +433,7 @@ def run_episode(task: str, max_steps: int, dry_run: bool = False) -> dict:
         return {"score": 0.0, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
 
     observation   = reset_data.get("observation", reset_data)
+    history = init_history()
     rewards       = []
     step_num      = 0
     done          = False
@@ -349,10 +441,16 @@ def run_episode(task: str, max_steps: int, dry_run: bool = False) -> dict:
 
     while not done and step_num < max_steps:
         step_num += 1
+        history["trust_trend"].append(observation.get("visible_trust", 0))
+        history["fatigue_trend"].append(observation.get("visible_fatigue", 0))
 
         try:
-            action = (_heuristic_action(observation) if dry_run
-                      else call_llm(observation, step_num, task))
+            if dry_run:
+                action = smart_policy(observation, history)
+                history["recent_actions"].append(action["action_type"])
+            else:
+                action = smart_policy(observation, history)
+                history["recent_actions"].append(action["action_type"])
         except Exception as e:
             action = _heuristic_action(observation)
             print(f"[WARN] LLM error step {step_num}: {e}", file=sys.stderr)
