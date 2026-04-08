@@ -12,12 +12,13 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import traceback
 
-from env_core import AttentionEconomyEnv
+from environment.env_core import AttentionEconomyEnv
 from environment.models import Action
 
 # ──────────────────────────────────────────────
@@ -69,22 +70,28 @@ def root():
     }
 
 @app.post("/reset")
-def reset(req: ResetRequest):
-    """
-    Start a new episode for the given task.
-    Returns the initial observation.
-    """
-    if req.task not in ("easy", "medium", "hard"):
-        raise HTTPException(status_code=400, detail=f"Invalid task: {req.task}. Choose easy/medium/hard.")
+async def reset(request: Request):
     try:
-        obs = env.reset(req.task)
+        data = await request.json()
+        task = data.get("task", "medium")   # ✅ flexible
+
+        if task not in ("easy", "medium", "hard"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid task: {task}. Choose easy/medium/hard."
+            )
+
+        obs = env.reset(task)
+
         return {
-            "observation": obs.model_dump(),
-            "task": req.task,
-            "max_steps": env.max_steps,
+            "observation": obs.model_dump()
         }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"reset() failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"reset() failed: {e}"
+        )
 
 @app.post("/step")
 def step(req: StepRequest):
