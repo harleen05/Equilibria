@@ -1,38 +1,24 @@
-"""
-tasks/__init__.py — Task registry for the Attention Economy Environment.
+from environment.tasks.easy import EasyTaskConfig, get_initial_user as easy_user
+from environment.tasks.medium import MediumTaskConfig, get_initial_user as medium_user
+from environment.tasks.hard import HardTaskConfig, get_initial_user as hard_user
 
-Usage:
-    from env.tasks import get_task
-
-    task_cfg, initial_user = get_task("medium")
-"""
-
-from __future__ import annotations
-from typing import Tuple
-from environment.tasks import easy, medium, hard
-
+# Map both short names AND openenv.yaml task IDs
+TASK_ALIASES = {
+    "easy":                 "easy",
+    "easy_recommendation":  "easy",
+    "medium":               "medium",
+    "diverse_feed":         "medium",
+    "hard":                 "hard",
+    "trust_preservation":   "hard",
+}
 
 def get_task(task_id: str):
-    """
-    Retrieve task configuration and initial user state by task ID.
-
-    Parameters
-    ----------
-    task_id : str
-        One of "easy", "medium", "hard"
-
-    Returns
-    -------
-    (task_config, UserState) — frozen task config + deterministic user state
-    """
-    if task_id == "easy":
-        return easy.get_task_config(), easy.get_initial_user()
-    elif task_id == "medium":
-        return medium.get_task_config(), medium.get_initial_user()
-    elif task_id == "hard":
-        return hard.get_task_config(), hard.get_initial_user()
-    else:
-        raise ValueError(
-            f"Unknown task_id: '{task_id}'. "
-            f"Choose from 'easy', 'medium', 'hard'."
-        )
+    resolved = TASK_ALIASES.get(task_id)
+    if resolved is None:
+        raise ValueError(f"Unknown task: {task_id}. Choose: {list(TASK_ALIASES.keys())}")
+    if resolved == "easy":
+        return EasyTaskConfig(), easy_user()
+    elif resolved == "medium":
+        return MediumTaskConfig(), medium_user()
+    elif resolved == "hard":
+        return HardTaskConfig(), hard_user()
