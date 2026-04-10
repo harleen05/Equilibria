@@ -32,11 +32,14 @@ class EpisodeGrader:
             cls.WEIGHTS["final_satisfaction"] * final_user.satisfaction
         )
 
+        def _clamp(v):
+            return round(min(max(float(v), 0.0001), 0.9999), 4)
+
         return {
-            "final_score": round(min(max(score, 0.0001), 0.9999), 4),
-            "avg_engagement": round(avg_eng, 4),
-            "final_trust": round(final_user.trust, 4),
-            "final_satisfaction": round(final_user.satisfaction, 4),
+            "final_score":        _clamp(score),
+            "avg_engagement":     _clamp(avg_eng),
+            "final_trust":        _clamp(final_user.trust),
+            "final_satisfaction": _clamp(final_user.satisfaction),
         }
 
 
@@ -154,7 +157,7 @@ class AttentionEconomyEnv:
 
         # Hard penalty for spamming pause — more than 2 consecutive = diminishing returns
         if self.consecutive_pauses > 2:
-            reward = max(0.0001, reward - 0.15 * (self.consecutive_pauses - 2))
+            reward = max(0.0, reward - 0.15 * (self.consecutive_pauses - 2))
 
         self.engagement_history.append(engagement)
 
