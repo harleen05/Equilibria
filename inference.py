@@ -163,13 +163,12 @@ def call_reset(task_id: str) -> Dict[str, Any]:
     return resp.json()
 
 def call_step(action: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /step — tries wrapped format first, then flat."""
-    # Try flat format (what our server expects)
-    resp = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
+    """POST /step — server expects {"action": {...}}"""
+    resp = requests.post(f"{ENV_URL}/step", json={"action": action}, timeout=30)
     if resp.ok:
         return resp.json()
-    # Try wrapped format as fallback
-    resp2 = requests.post(f"{ENV_URL}/step", json={"action": action}, timeout=30)
+    # Fallback: try flat format
+    resp2 = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
     resp2.raise_for_status()
     return resp2.json()
 
