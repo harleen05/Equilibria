@@ -209,7 +209,7 @@ class SimulationEngine:
         eng = base * relevance_weight * addiction_amp * (0.5 + 0.5 * novelty_factor) * fatigue_drag
         # Small stochastic noise — makes RL necessary, models real user variance
         noise = self.rng.normal(0.0, 0.02)
-        return float(np.clip(eng + noise, 0.0, 1.0))
+        return float(np.clip(eng + noise, 0.0001, 0.9999))
 
     # ── Full Step Transition ─────────────────────────────────────────────
     def apply_transition(

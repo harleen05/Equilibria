@@ -43,7 +43,7 @@ action_space:
     action_type: one of [recommend, diversify_feed, explore_new_topic, pause_session].
     content_id: required when action_type is recommend (string ID from available_content).
 
-reward_range: [0.0, 1.0]
+reward_range: [0.0001, 0.9999]
 
 episode_grade:
   formula: "0.40 * avg_engagement + 0.35 * final_trust + 0.25 * final_satisfaction"

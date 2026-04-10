@@ -15,7 +15,7 @@ import math
 from typing import Dict, List, Optional
 
 
-def clip(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
+def clip(value: float, lo: float = 0.0001, hi: float = 0.9999) -> float:
     """
     Clamp `value` to the closed interval [lo, hi].
 
