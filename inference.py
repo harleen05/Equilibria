@@ -104,6 +104,8 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
         print(f"error={error}",        flush=True)
 
 def log_end(success: bool, steps: int, score: float) -> None:
+    # Score must be strictly between 0 and 1 (not 0.0, not 1.0)
+    score = max(0.0001, min(score, 0.9999))
     print("[END]",                           flush=True)
     print(f"success={str(success).lower()}", flush=True)
     print(f"steps={steps}",                  flush=True)
