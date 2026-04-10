@@ -74,7 +74,7 @@ def compute_base_score(
         EPISODE_GRADE_WEIGHTS["final_trust"]        * final_trust +
         EPISODE_GRADE_WEIGHTS["final_satisfaction"] * final_satisfaction
     )
-    return round(min(max(score, 0.0), 1.0), 4)
+    return round(min(max(score, 0.0001), 0.9999), 4)
 
 
 def grade_from_info(episode_grade: Dict, task_id: str = "medium") -> Dict:

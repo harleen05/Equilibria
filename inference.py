@@ -481,7 +481,7 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
         else:
             max_total = float(max_steps)
             score = round(min(sum(rewards) / max_total, 1.0), 4) if max_total > 0 else 0.0
-        score   = max(0.0, min(score, 1.0))
+        score   = max(0.0001, min(score, 0.9999))
         success = score >= threshold
     except Exception:
         score, success = 0.0, False
