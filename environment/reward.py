@@ -166,7 +166,7 @@ class RewardFunction:
         )
 
         # Clip to [0, 1] — penalties can push below 0 for severely harmful actions
-        reward = max(0.0, min(raw_reward, 1.0))
+        reward = max(0.0001, min(raw_reward, 0.9999))
 
         breakdown: Dict[str, float] = {
             "R_engagement":      round(R_eng,          4),

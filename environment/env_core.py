@@ -33,7 +33,7 @@ class EpisodeGrader:
         )
 
         return {
-            "final_score": round(min(max(score, 0.0), 1.0), 4),
+            "final_score": round(min(max(score, 0.0001), 0.9999), 4),
             "avg_engagement": round(avg_eng, 4),
             "final_trust": round(final_user.trust, 4),
             "final_satisfaction": round(final_user.satisfaction, 4),
