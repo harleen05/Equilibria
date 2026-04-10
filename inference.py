@@ -1,31 +1,5 @@
 """
 inference.py — Attention Economy OpenEnv
-Person 2 deliverable: agent loop, structured logging, scoring.
-
-WIRED TO: Person 1's AttentionEconomyEnv (Equilibria repo)
-  Actions  : {"action_type": "recommend", "content_id": "rel_tech_01"}
-             {"action_type": "diversify_feed"}
-             {"action_type": "explore_new_topic"}
-             {"action_type": "pause_session"}
-  Obs keys : visible_fatigue, visible_trust, visible_satisfaction,
-             visible_boredom, available_content, interest_distribution,
-             recent_content_ids, recent_diversity_score, step_count, task_id
-  Episode grade: info["episode_grade"]["final_score"] at done=True
-                 formula: 0.40*avg_engagement + 0.35*final_trust + 0.25*final_satisfaction
-
-Submission compliance:
-  ✓ OpenAI client for ALL LLM calls (mandatory per rules)
-  ✓ API_BASE_URL / API_KEY / MODEL_NAME from environment variables
-  ✓ [START] / [STEP] / [END] on stdout, exact field names and order
-  ✓ LLM called first every step; smart_policy is fallback only
-  ✓ inference.py in repo root
-  ✓ Runs all 3 tasks; completes < 20 min on 2vCPU / 8 GB
-
-Usage:
-  python inference.py                         # all 3 tasks
-  python inference.py --task easy
-  python inference.py --task all --steps 15   # override max_steps
-  python inference.py --dry-run               # no API / env calls, verifies log format
 """
 
 from __future__ import annotations
@@ -35,14 +9,14 @@ import json
 import os
 import re
 import sys
+import traceback
 from typing import Any, Dict, List, Optional
 
 import requests
-from openai import OpenAI   # mandatory per submission rules
+from openai import OpenAI
 
 # ─────────────────────────────────────────────────────────
-# CONFIG — read from environment, never hardcoded
-# Validator injects: API_BASE_URL, API_KEY, MODEL_NAME, ENV_URL
+# CONFIG
 # ─────────────────────────────────────────────────────────
 
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "").rstrip("/")
@@ -82,10 +56,7 @@ _client: Optional[OpenAI] = None
 def get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(
-            base_url=API_BASE_URL,
-            api_key=API_KEY,
-        )
+        _client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     return _client
 
 # ─────────────────────────────────────────────────────────
@@ -107,12 +78,7 @@ STRATEGY:
 - If visible_fatigue > 0.65 → pause_session
 - If visible_boredom > 0.45 → diversify_feed
 - If visible_trust < 0.35   → explore_new_topic
-- Otherwise → recommend the highest-scoring safe content:
-    score = 0.5 * topic_relevance[dominant_interest]
-          + 0.2 * educational_value
-          - 0.2 * addictiveness
-          - 0.3 * manipulation_score
-  Exclude: content_id in recent_content_ids, manipulation_score > 0.40, addictiveness > 0.60
+- Otherwise → recommend the highest-scoring safe content
 
 RESPONSE FORMAT — valid JSON only, no markdown fences:
 recommend    : {"action_type": "recommend", "content_id": "rel_tech_01", "reasoning": "one sentence"}
@@ -128,13 +94,7 @@ def log_start(task: str, env: str, model: str) -> None:
     print(f"env={env}",     flush=True)
     print(f"model={model}", flush=True)
 
-def log_step(
-    step: int,
-    action: str,
-    reward: float,
-    done: bool,
-    error: Optional[str] = None,
-) -> None:
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str] = None) -> None:
     print("[STEP]",                    flush=True)
     print(f"step={step}",              flush=True)
     print(f"action={action}",          flush=True)
@@ -150,11 +110,32 @@ def log_end(success: bool, steps: int, score: float) -> None:
     print(f"score={score:.4f}",              flush=True)
 
 # ─────────────────────────────────────────────────────────
+# SAFE FIELD ACCESSOR
+# ─────────────────────────────────────────────────────────
+
+def _f(item: Any, key: str, default: Any = None) -> Any:
+    """Safely get a field from dict or object, never raises."""
+    try:
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
+    except Exception:
+        return default
+
+def _float(val: Any, default: float = 0.0) -> float:
+    """Safely convert to float, never raises."""
+    try:
+        if val is None:
+            return default
+        return float(val)
+    except Exception:
+        return default
+
+# ─────────────────────────────────────────────────────────
 # ENV HTTP CLIENT
 # ─────────────────────────────────────────────────────────
 
 def call_reset(task_id: str) -> Dict[str, Any]:
-    """POST /reset — sends both 'task' and 'task_id' for compatibility."""
     payload = {"task": task_id, "task_id": task_id}
     print(f"[DEBUG] POST {ENV_URL}/reset payload={payload}", file=sys.stderr)
     resp = requests.post(f"{ENV_URL}/reset", json=payload, timeout=30)
@@ -163,12 +144,16 @@ def call_reset(task_id: str) -> Dict[str, Any]:
     return resp.json()
 
 def call_step(action: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /step — server expects {"action": {...}}"""
+    """Try wrapped format first (server expects {"action": {...}}), then flat."""
+    print(f"[DEBUG] POST {ENV_URL}/step action={action}", file=sys.stderr)
+    # Server's StepRequest model expects: {"action": {...}}
     resp = requests.post(f"{ENV_URL}/step", json={"action": action}, timeout=30)
+    print(f"[DEBUG] step status={resp.status_code}", file=sys.stderr)
     if resp.ok:
         return resp.json()
-    # Fallback: try flat format
+    # Fallback: flat format
     resp2 = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
+    print(f"[DEBUG] step fallback status={resp2.status_code} body={resp2.text[:200]}", file=sys.stderr)
     resp2.raise_for_status()
     return resp2.json()
 
@@ -177,32 +162,37 @@ def call_step(action: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────
 
 def _build_user_message(obs: Dict[str, Any], step: int, task: str, last_reward: float) -> str:
-    content_pool = obs.get("available_content", [])
+    try:
+        content_pool = obs.get("available_content", [])
+        pool_lines = []
+        for c in content_pool:
+            try:
+                line = (
+                    f"  id={_f(c,'content_id','?')}  "
+                    f"relevance={json.dumps(_f(c,'topic_relevance') or {})}  "
+                    f"manip={_float(_f(c,'manipulation_score')):.2f}  "
+                    f"addict={_float(_f(c,'addictiveness')):.2f}  "
+                    f"edu={_float(_f(c,'educational_value')):.2f}"
+                )
+                pool_lines.append(line)
+            except Exception:
+                pool_lines.append(f"  id={_f(c,'content_id','?')} (parse error)")
 
-    def _field(item, key, default=None):
-        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
-
-    pool_lines = [
-        f"  id={_field(c,'content_id')}  "
-        f"relevance={json.dumps(_field(c,'topic_relevance',{}))}  "
-        f"manip={_field(c,'manipulation_score',0):.2f}  "
-        f"addict={_field(c,'addictiveness',0):.2f}  "
-        f"edu={_field(c,'educational_value',0):.2f}"
-        for c in content_pool
-    ]
-
-    return (
-        f"Step {step} (task={task}, last_reward={last_reward:+.2f})\n\n"
-        f"USER STATE:\n"
-        f"  fatigue={obs.get('visible_fatigue',0):.2f}  "
-        f"trust={obs.get('visible_trust',0):.2f}  "
-        f"satisfaction={obs.get('visible_satisfaction',0):.2f}  "
-        f"boredom={obs.get('visible_boredom',0):.2f}\n\n"
-        f"INTERESTS: {json.dumps(obs.get('interest_distribution',{}))}\n"
-        f"RECENT IDs: {obs.get('recent_content_ids',[])}\n\n"
-        f"AVAILABLE CONTENT:\n" + "\n".join(pool_lines) + "\n\n"
-        f"Respond with JSON only."
-    )
+        return (
+            f"Step {step} (task={task}, last_reward={last_reward:+.2f})\n\n"
+            f"USER STATE:\n"
+            f"  fatigue={_float(obs.get('visible_fatigue')):.2f}  "
+            f"trust={_float(obs.get('visible_trust')):.2f}  "
+            f"satisfaction={_float(obs.get('visible_satisfaction')):.2f}  "
+            f"boredom={_float(obs.get('visible_boredom')):.2f}\n\n"
+            f"INTERESTS: {json.dumps(obs.get('interest_distribution') or {})}\n"
+            f"RECENT IDs: {obs.get('recent_content_ids') or []}\n\n"
+            f"AVAILABLE CONTENT:\n" + "\n".join(pool_lines) + "\n\n"
+            f"Respond with JSON only."
+        )
+    except Exception as e:
+        print(f"[ERROR] _build_user_message failed: {e}", file=sys.stderr)
+        return f"Step {step}. Choose one action: recommend, diversify_feed, explore_new_topic, pause_session. Respond with JSON only."
 
 
 def call_llm(obs: Dict[str, Any], step: int, task: str, last_reward: float) -> Dict[str, Any]:
@@ -221,32 +211,32 @@ def call_llm(obs: Dict[str, Any], step: int, task: str, last_reward: float) -> D
 
 
 def _parse_llm_response(raw: str, obs: Dict[str, Any]) -> Dict[str, Any]:
-    def _field(item, key, default=None):
-        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
-
-    available_ids = [_field(c, "content_id") for c in obs.get("available_content", [])]
-
     try:
-        clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
-        parsed = json.loads(clean.strip())
-        atype = parsed.get("action_type", "recommend")
-        if atype in ("diversify_feed", "explore_new_topic", "pause_session"):
-            return {"action_type": atype, "reasoning": parsed.get("reasoning", "")}
-        if atype == "recommend":
-            cid = str(parsed.get("content_id", ""))
-            if cid in available_ids:
-                return {"action_type": "recommend", "content_id": cid,
-                        "reasoning": parsed.get("reasoning", "")}
-    except Exception:
-        pass
+        available_ids = [_f(c, "content_id") for c in (obs.get("available_content") or [])]
 
-    m = re.search(r'"content_id"\s*:\s*"([^"]+)"', raw)
-    if m and m.group(1) in available_ids:
-        return {"action_type": "recommend", "content_id": m.group(1), "reasoning": "regex-extracted"}
+        try:
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+            parsed = json.loads(clean.strip())
+            atype = parsed.get("action_type", "recommend")
+            if atype in ("diversify_feed", "explore_new_topic", "pause_session"):
+                return {"action_type": atype, "reasoning": parsed.get("reasoning", "")}
+            if atype == "recommend":
+                cid = str(parsed.get("content_id", ""))
+                if cid in available_ids:
+                    return {"action_type": "recommend", "content_id": cid,
+                            "reasoning": parsed.get("reasoning", "")}
+        except Exception:
+            pass
 
-    for cid in SAFE_CONTENT:
-        if cid in raw and cid in available_ids:
-            return {"action_type": "recommend", "content_id": cid, "reasoning": "substring-extracted"}
+        m = re.search(r'"content_id"\s*:\s*"([^"]+)"', raw)
+        if m and m.group(1) in available_ids:
+            return {"action_type": "recommend", "content_id": m.group(1), "reasoning": "regex-extracted"}
+
+        for cid in SAFE_CONTENT:
+            if cid in raw and cid in available_ids:
+                return {"action_type": "recommend", "content_id": cid, "reasoning": "substring-extracted"}
+    except Exception as e:
+        print(f"[ERROR] _parse_llm_response failed: {e}", file=sys.stderr)
 
     return _smart_policy(obs)
 
@@ -255,59 +245,69 @@ def _parse_llm_response(raw: str, obs: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────
 
 def _smart_policy(obs: Dict[str, Any]) -> Dict[str, Any]:
-    def _field(item, key, default=None):
-        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+    try:
+        fatigue = _float(obs.get("visible_fatigue"))
+        trust   = _float(obs.get("visible_trust"), 1.0)
+        boredom = _float(obs.get("visible_boredom"))
 
-    fatigue = obs.get("visible_fatigue", 0)
-    trust   = obs.get("visible_trust", 1)
-    boredom = obs.get("visible_boredom", 0)
+        if fatigue > 0.65:
+            return {"action_type": "pause_session",     "reasoning": "fallback: high fatigue"}
+        if trust < 0.35:
+            return {"action_type": "explore_new_topic", "reasoning": "fallback: trust recovery"}
+        if boredom > 0.45:
+            return {"action_type": "diversify_feed",    "reasoning": "fallback: high boredom"}
 
-    if fatigue > 0.65:
-        return {"action_type": "pause_session",     "reasoning": "fallback: high fatigue"}
-    if trust < 0.35:
-        return {"action_type": "explore_new_topic", "reasoning": "fallback: trust recovery"}
-    if boredom > 0.45:
-        return {"action_type": "diversify_feed",    "reasoning": "fallback: high boredom"}
+        interest_dist = obs.get("interest_distribution") or {}
+        dominant = max(interest_dist, key=interest_dist.get) if interest_dist else "technology"
+        recent   = set(obs.get("recent_content_ids") or [])
 
-    interest_dist = obs.get("interest_distribution", {})
-    dominant = max(interest_dist, key=interest_dist.get) if interest_dist else "technology"
-    recent   = set(obs.get("recent_content_ids", []))
+        best_id, best_score = None, -1.0
+        for item in (obs.get("available_content") or []):
+            try:
+                cid    = _f(item, "content_id", "")
+                manip  = _float(_f(item, "manipulation_score"))
+                addict = _float(_f(item, "addictiveness"))
+                rel    = _f(item, "topic_relevance") or {}
+                edu    = _float(_f(item, "educational_value"))
 
-    best_id, best_score = None, -1.0
-    for item in obs.get("available_content", []):
-        cid    = _field(item, "content_id", "")
-        manip  = _field(item, "manipulation_score", 0)
-        addict = _field(item, "addictiveness", 0)
-        rel    = _field(item, "topic_relevance", {})
-        edu    = _field(item, "educational_value", 0)
+                if cid in recent or manip > 0.40 or addict > 0.60:
+                    continue
 
-        if cid in recent or manip > 0.40 or addict > 0.60:
-            continue
+                score = 0.50 * _float(rel.get(dominant)) + 0.20 * edu - 0.20 * addict - 0.30 * manip
+                if score > best_score:
+                    best_score, best_id = score, cid
+            except Exception:
+                continue
 
-        score = 0.50 * rel.get(dominant, 0) + 0.20 * edu - 0.20 * addict - 0.30 * manip
-        if score > best_score:
-            best_score, best_id = score, cid
+        if best_id:
+            return {"action_type": "recommend", "content_id": best_id, "reasoning": "fallback: heuristic"}
 
-    if best_id:
-        return {"action_type": "recommend", "content_id": best_id, "reasoning": "fallback: heuristic best pick"}
+        for item in (obs.get("available_content") or []):
+            try:
+                cid   = _f(item, "content_id", "")
+                manip = _float(_f(item, "manipulation_score"))
+                if cid and manip < 0.30:
+                    return {"action_type": "recommend", "content_id": cid, "reasoning": "fallback: last resort"}
+            except Exception:
+                continue
 
-    for item in obs.get("available_content", []):
-        cid   = _field(item, "content_id", "")
-        manip = _field(item, "manipulation_score", 0)
-        if cid and manip < 0.30:
-            return {"action_type": "recommend", "content_id": cid, "reasoning": "fallback: last resort"}
+    except Exception as e:
+        print(f"[ERROR] _smart_policy failed: {e}", file=sys.stderr)
 
-    return {"action_type": "explore_new_topic", "reasoning": "fallback: no content available"}
+    return {"action_type": "explore_new_topic", "reasoning": "fallback: safe default"}
 
 # ─────────────────────────────────────────────────────────
 # ACTION STRING
 # ─────────────────────────────────────────────────────────
 
 def _action_str(action: Dict[str, Any]) -> str:
-    atype = action.get("action_type", "unknown")
-    if atype == "recommend":
-        return f"recommend(content_id={action.get('content_id','?')})"
-    return atype
+    try:
+        atype = action.get("action_type", "unknown")
+        if atype == "recommend":
+            return f"recommend(content_id={action.get('content_id','?')})"
+        return atype
+    except Exception:
+        return "unknown"
 
 # ─────────────────────────────────────────────────────────
 # DRY-RUN FAKE ENV
@@ -338,12 +338,11 @@ def _fake_reset(task_id: str) -> Dict[str, Any]:
 def _fake_step(action: Dict[str, Any], step_num: int, max_steps: int, obs: Dict[str, Any]) -> Dict[str, Any]:
     import random
     rng = random.Random(step_num * 17 + abs(hash(action.get("content_id", action.get("action_type", "")))) % 997)
-
     atype = action.get("action_type", "recommend")
     cid   = action.get("content_id", "")
-    f = obs.get("visible_fatigue", 0.1)
-    t = obs.get("visible_trust", 0.8)
-    s = obs.get("visible_satisfaction", 0.5)
+    f = _float(obs.get("visible_fatigue"), 0.1)
+    t = _float(obs.get("visible_trust"), 0.8)
+    s = _float(obs.get("visible_satisfaction"), 0.5)
 
     if atype == "pause_session":
         f, t, s = max(0.0, f-0.20), min(1.0, t+0.05), s
@@ -366,9 +365,9 @@ def _fake_step(action: Dict[str, Any], step_num: int, max_steps: int, obs: Dict[
         "visible_trust":        round(t, 4),
         "visible_satisfaction": round(s, 4),
         "step_count":           step_num,
-        "recent_content_ids":   (obs.get("recent_content_ids", []) + ([cid] if cid else []))[-5:],
+        "recent_content_ids":   (obs.get("recent_content_ids") or [] + ([cid] if cid else []))[-5:],
     })
-    eng  = round(rng.uniform(0.40, 0.75), 4)
+    eng = round(rng.uniform(0.40, 0.75), 4)
     info: Dict[str, Any] = {
         "step": step_num, "task": obs.get("task_id", "unknown"),
         "diagnostics": {"engagement": eng, "diversity_score": round(rng.uniform(0.4, 1.0), 4)},
@@ -398,11 +397,17 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
     try:
         reset_data = _fake_reset(task_id) if dry_run else call_reset(task_id)
     except Exception as e:
-        print(f"[ERROR] reset failed for task={task_id}: {e}", file=sys.stderr)
+        print(f"[ERROR] reset failed: {e}\n{traceback.format_exc()}", file=sys.stderr)
         log_end(success=False, steps=0, score=0.0)
         return {"score": 0.0, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
 
-    obs            = reset_data.get("observation", reset_data)
+    try:
+        obs = reset_data.get("observation", reset_data)
+        if not isinstance(obs, dict):
+            obs = {}
+    except Exception:
+        obs = {}
+
     rewards:       List[float] = []
     step_num:      int         = 0
     done:          bool        = False
@@ -413,23 +418,33 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
         step_num += 1
         error_str: Optional[str] = None
 
-        if dry_run:
-            action = _smart_policy(obs)
-        else:
-            try:
-                action = call_llm(obs, step_num, task_id, last_reward)
-            except Exception as e:
+        # Decide action
+        try:
+            if dry_run:
                 action = _smart_policy(obs)
-                error_str = f"llm_fallback:{str(e)[:60]}"
+            else:
+                try:
+                    action = call_llm(obs, step_num, task_id, last_reward)
+                except Exception as e:
+                    print(f"[ERROR] LLM call failed at step {step_num}: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                    action = _smart_policy(obs)
+                    error_str = f"llm_fallback:{str(e)[:60]}"
+        except Exception as e:
+            print(f"[ERROR] action decision failed: {e}", file=sys.stderr)
+            action = {"action_type": "explore_new_topic", "reasoning": "emergency fallback"}
+            error_str = f"action_error:{str(e)[:60]}"
 
         action_str = _action_str(action)
 
-        env_action: Dict[str, Any] = {"action_type": action["action_type"]}
-        if action.get("content_id"):
-            env_action["content_id"] = action["content_id"]
-        if action.get("topic"):
-            env_action["topic"] = action["topic"]
+        # Build env action
+        try:
+            env_action: Dict[str, Any] = {"action_type": action.get("action_type", "explore_new_topic")}
+            if action.get("content_id"):
+                env_action["content_id"] = action["content_id"]
+        except Exception:
+            env_action = {"action_type": "explore_new_topic"}
 
+        # Step env
         try:
             result = (
                 _fake_step(env_action, step_num, max_steps, obs)
@@ -437,33 +452,41 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
                 else call_step(env_action)
             )
         except Exception as e:
-            print(f"[ERROR] step failed at step={step_num}: {e}", file=sys.stderr)
+            print(f"[ERROR] step failed at step={step_num}: {e}\n{traceback.format_exc()}", file=sys.stderr)
             log_step(step_num, action_str, 0.0, True, error=f"step_error:{str(e)[:60]}")
             done = True
             break
 
-        reward      = float(result.get("reward", 0.0))
-        done        = bool(result.get("done", False))
-        obs         = result.get("observation", obs)
-        info        = result.get("info", {})
-        last_reward = reward
+        try:
+            reward      = _float(result.get("reward"), 0.0)
+            done        = bool(result.get("done", False))
+            new_obs     = result.get("observation", obs)
+            obs         = new_obs if isinstance(new_obs, dict) else obs
+            info        = result.get("info") or {}
+            last_reward = reward
 
-        if done and "episode_grade" in info:
-            episode_grade = info["episode_grade"]
+            if done and "episode_grade" in info:
+                episode_grade = info["episode_grade"]
 
-        rewards.append(reward)
-        log_step(step_num, action_str, reward, done, error=error_str)
+            rewards.append(reward)
+            log_step(step_num, action_str, reward, done, error=error_str)
+        except Exception as e:
+            print(f"[ERROR] result parsing failed: {e}", file=sys.stderr)
+            log_step(step_num, action_str, 0.0, done, error=f"parse_error:{str(e)[:60]}")
 
-    if episode_grade and "final_score" in episode_grade:
-        score = round(float(episode_grade["final_score"]), 4)
-    else:
-        max_total = max_steps * 1.0
-        score = round(min(sum(rewards) / max_total, 1.0), 4) if max_total > 0 else 0.0
+    # Score
+    try:
+        if episode_grade and "final_score" in episode_grade:
+            score = round(_float(episode_grade["final_score"]), 4)
+        else:
+            max_total = float(max_steps)
+            score = round(min(sum(rewards) / max_total, 1.0), 4) if max_total > 0 else 0.0
+        score   = max(0.0, min(score, 1.0))
+        success = score >= threshold
+    except Exception:
+        score, success = 0.0, False
 
-    score   = max(0.0, min(score, 1.0))
-    success = score >= threshold
     log_end(success=success, steps=step_num, score=score)
-
     return {"score": score, "success": success, "steps": step_num,
             "rewards": rewards, "episode_grade": episode_grade}
 
@@ -472,34 +495,37 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
 # ─────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AttentionEconomyEnv baseline inference agent")
+    parser = argparse.ArgumentParser(description="AttentionEconomyEnv inference agent")
     parser.add_argument("--task", choices=["easy", "medium", "hard", "all"], default="all")
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    # Debug: show injected env vars
     print(f"[DEBUG] ENV_URL={ENV_URL}",             file=sys.stderr)
     print(f"[DEBUG] API_BASE_URL={API_BASE_URL}",   file=sys.stderr)
     print(f"[DEBUG] MODEL_NAME={MODEL_NAME}",       file=sys.stderr)
     print(f"[DEBUG] API_KEY={'SET' if API_KEY else 'NOT SET'}", file=sys.stderr)
 
     if not args.dry_run:
-        has_base = bool(API_BASE_URL)
-        has_key  = bool(API_KEY)
-        if not has_base or not has_key:
-            print("[WARN] API_BASE_URL or API_KEY not set — falling back to dry-run mode", file=sys.stderr)
+        if not API_BASE_URL or not API_KEY:
+            print("[WARN] API_BASE_URL or API_KEY not set — falling back to dry-run", file=sys.stderr)
             args.dry_run = True
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
     results: Dict[str, Dict] = {}
 
     for task_id in tasks_to_run:
-        results[task_id] = run_episode(
-            task_id=task_id,
-            max_steps_override=args.steps,
-            dry_run=args.dry_run,
-        )
+        try:
+            results[task_id] = run_episode(
+                task_id=task_id,
+                max_steps_override=args.steps,
+                dry_run=args.dry_run,
+            )
+        except Exception as e:
+            print(f"[ERROR] run_episode crashed for {task_id}: {e}\n{traceback.format_exc()}", file=sys.stderr)
+            results[task_id] = {"score": 0.0, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
+            # Still log [END] so output parser doesn't crash
+            log_end(success=False, steps=0, score=0.0)
 
     print("\n" + "=" * 62, file=sys.stderr)
     print("  BASELINE SUMMARY", file=sys.stderr)
@@ -508,22 +534,22 @@ def main() -> None:
     print(f"  {'-'*57}", file=sys.stderr)
 
     for task_id, r in results.items():
-        g      = r.get("episode_grade", {})
-        status = "PASS" if r["success"] else "FAIL"
+        g      = r.get("episode_grade") or {}
+        status = "PASS" if r.get("success") else "FAIL"
         detail = (
-            f"{g.get('avg_engagement',0):.2f} / "
-            f"{g.get('final_trust',0):.2f} / "
-            f"{g.get('final_satisfaction',0):.2f}"
+            f"{_float(g.get('avg_engagement')):.2f} / "
+            f"{_float(g.get('final_trust')):.2f} / "
+            f"{_float(g.get('final_satisfaction')):.2f}"
             if g else "—"
         )
-        print(f"  {task_id:<10} {r['score']:<10.4f} {status:<5} {r['steps']:<7} {detail}", file=sys.stderr)
+        print(f"  {task_id:<10} {r.get('score',0):<10.4f} {status:<5} {r.get('steps',0):<7} {detail}", file=sys.stderr)
 
-    overall = sum(r["score"] for r in results.values()) / max(len(results), 1)
+    overall = sum(r.get("score", 0) for r in results.values()) / max(len(results), 1)
     print(f"\n  Overall avg score: {overall:.4f}", file=sys.stderr)
     print("=" * 62, file=sys.stderr)
 
-    all_pass = all(r["success"] for r in results.values())
-    sys.exit(0 if all_pass else 1)
+    # Exit 0 always — let the validator judge scores, not exit code
+    sys.exit(0)
 
 
 if __name__ == "__main__":
