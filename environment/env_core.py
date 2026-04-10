@@ -154,7 +154,7 @@ class AttentionEconomyEnv:
 
         # Hard penalty for spamming pause — more than 2 consecutive = diminishing returns
         if self.consecutive_pauses > 2:
-            reward = max(0.0, reward - 0.15 * (self.consecutive_pauses - 2))
+            reward = max(0.0001, reward - 0.15 * (self.consecutive_pauses - 2))
 
         self.engagement_history.append(engagement)
 
