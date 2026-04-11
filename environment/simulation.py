@@ -16,7 +16,7 @@ from environment.models import UserState, ContentItem, Action
 
 HISTORY_WINDOW = 5
 FATIGUE_CAP = 1.0
-TRUST_FLOOR = 0.0
+TRUST_FLOOR = 0.0001
 BOREDOM_DECAY = 0.05
 FATIGUE_DECAY = 0.03
 
@@ -124,7 +124,7 @@ class SimulationEngine:
             t -= 0.20 * content.manipulation_score * user.trust_decay_rate
             t -= 0.05 * (1.0 - interest_match)
             t += 0.03 * interest_match * content.educational_value
-        return max(TRUST_FLOOR, min(t, 1.0))
+        return max(TRUST_FLOOR, min(t, 0.9999))
 
     # ── Satisfaction Transition ─────────────────────────────────────────
     @staticmethod
@@ -147,7 +147,7 @@ class SimulationEngine:
             alpha = 0.12
             beta = 0.08
             s += alpha * engagement_quality - beta * user.fatigue
-            s = max(0.0, min(s, 1.0))
+            s = max(0.0001, min(s, 0.9999))
         return s
 
     # ── Addiction Risk Transition ────────────────────────────────────────
@@ -165,7 +165,7 @@ class SimulationEngine:
         elif content is not None:
             ar += 0.08 * content.addictiveness
             ar -= 0.03 * content.educational_value
-        return max(0.0, min(ar, 1.0))
+        return max(0.0001, min(ar, 0.9999))
 
     # ── Boredom Transition ───────────────────────────────────────────────
     @staticmethod
@@ -181,7 +181,7 @@ class SimulationEngine:
             b += repetition_penalty * 0.2
             b += (1.0 - diversity_score) * 0.05
             b -= content.novelty * 0.05
-        return max(0.0, min(b, 1.0))
+        return max(0.0001, min(b, 0.9999))
 
     # ── Engagement Signal ────────────────────────────────────────────────
     def compute_engagement(

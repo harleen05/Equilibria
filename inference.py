@@ -379,8 +379,8 @@ def _fake_step(action: Dict[str, Any], step_num: int, max_steps: int, obs: Dict[
         info["episode_grade"] = {
             "final_score":        round(max(0.0001, min(raw_score, 0.9999)), 4),
             "avg_engagement":     eng,
-            "final_trust":        round(t, 4),
-            "final_satisfaction": round(s, 4),
+            "final_trust":        round(max(0.0001, min(t, 0.9999)), 4),
+            "final_satisfaction": round(max(0.0001, min(s, 0.9999)), 4),
         }
     return {"observation": new_obs, "reward": reward, "done": done, "info": info}
 
@@ -477,7 +477,7 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
             score = round(_float(episode_grade["final_score"]), 4)
         else:
             max_total = float(max_steps)
-            score = round(min(sum(rewards) / max_total, 1.0), 4) if max_total > 0 else 0.0001
+            score = round(min(sum(rewards) / max_total, 0.9999), 4) if max_total > 0 else 0.0001
         score   = max(0.0001, min(score, 0.9999))
         success = score >= threshold
     except Exception:
