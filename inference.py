@@ -20,7 +20,8 @@ from openai import OpenAI
 # ─────────────────────────────────────────────────────────
 
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "").rstrip("/")
-API_KEY:      str = os.environ.get("API_KEY", os.environ.get("HF_TOKEN", ""))
+HF_TOKEN:     str = os.environ.get("HF_TOKEN", "")
+API_KEY:      str = os.environ.get("API_KEY", HF_TOKEN)
 MODEL_NAME:   str = os.environ.get("MODEL_NAME", "gpt-4o-mini")
 ENV_URL:      str = os.environ.get("ENV_URL", "http://localhost:7860").rstrip("/")
 
@@ -77,39 +78,37 @@ YOUR 4 POSSIBLE ACTIONS:
 STRATEGY:
 - If visible_fatigue > 0.65 → pause_session
 - If visible_boredom > 0.45 → diversify_feed
-- If visible_trust < 0.35   → explore_new_topic
-- Otherwise → recommend the highest-scoring safe content
+- Pick content where manipulation_score < 0.20, not in recent_content_ids
+- Prefer rel_* content (high educational_value builds trust)
+- NEVER recommend mis_outrage_01/02 or mis_pseudo_01
 
-RESPONSE FORMAT — valid JSON only, no markdown fences:
-recommend    : {"action_type": "recommend", "content_id": "rel_tech_01", "reasoning": "one sentence"}
-other action : {"action_type": "pause_session", "reasoning": "fatigue is 0.72"}"""
+For recommend: {"action_type": "recommend", "content_id": "rel_tech_01", "reasoning": "one sentence"}
+For other action : {"action_type": "pause_session", "reasoning": "fatigue is 0.72"}"""
 
 # ─────────────────────────────────────────────────────────
-# LOG HELPERS
+# LOG HELPERS — SINGLE LINE FORMAT (spec-compliant)
+# Format: [START] task=X env=Y model=Z
+#         [STEP] step=N action=A reward=0.00 done=false error=null
+#         [END] success=true steps=N score=0.00 rewards=r1,r2,...
 # ─────────────────────────────────────────────────────────
 
 def log_start(task: str, env: str, model: str) -> None:
-    print("[START]",        flush=True)
-    print(f"task={task}",   flush=True)
-    print(f"env={env}",     flush=True)
-    print(f"model={model}", flush=True)
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str] = None) -> None:
-    print("[STEP]",                    flush=True)
-    print(f"step={step}",              flush=True)
-    print(f"action={action}",          flush=True)
-    print(f"reward={reward:+.2f}",     flush=True)
-    print(f"done={str(done).lower()}", flush=True)
-    if error:
-        print(f"error={error}",        flush=True)
+    # reward formatted to 2 decimal places, no sign prefix
+    reward_str = f"{reward:.2f}"
+    done_str   = "true" if done else "false"
+    error_str  = error if error else "null"
+    print(f"[STEP] step={step} action={action} reward={reward_str} done={done_str} error={error_str}", flush=True)
 
-def log_end(success: bool, steps: int, score: float) -> None:
-    # Score must be strictly between 0 and 1 (not 0.0, not 1.0)
-    score = max(0.0001, min(score, 0.9999))
-    print("[END]",                           flush=True)
-    print(f"success={str(success).lower()}", flush=True)
-    print(f"steps={steps}",                  flush=True)
-    print(f"score={score:.4f}",              flush=True)
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    # Score must be strictly between 0 and 1 — not 0.0, not 1.0
+    score        = max(0.0001, min(score, 0.9999))
+    success_str  = "true" if success else "false"
+    score_str    = f"{score:.2f}"
+    rewards_str  = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
+    print(f"[END] success={success_str} steps={steps} score={score_str} rewards={rewards_str}", flush=True)
 
 # ─────────────────────────────────────────────────────────
 # SAFE FIELD ACCESSOR
@@ -148,12 +147,10 @@ def call_reset(task_id: str) -> Dict[str, Any]:
 def call_step(action: Dict[str, Any]) -> Dict[str, Any]:
     """Try wrapped format first (server expects {"action": {...}}), then flat."""
     print(f"[DEBUG] POST {ENV_URL}/step action={action}", file=sys.stderr)
-    # Server's StepRequest model expects: {"action": {...}}
     resp = requests.post(f"{ENV_URL}/step", json={"action": action}, timeout=30)
     print(f"[DEBUG] step status={resp.status_code}", file=sys.stderr)
     if resp.ok:
         return resp.json()
-    # Fallback: flat format
     resp2 = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
     print(f"[DEBUG] step fallback status={resp2.status_code} body={resp2.text[:200]}", file=sys.stderr)
     resp2.raise_for_status()
@@ -181,7 +178,7 @@ def _build_user_message(obs: Dict[str, Any], step: int, task: str, last_reward: 
                 pool_lines.append(f"  id={_f(c,'content_id','?')} (parse error)")
 
         return (
-            f"Step {step} (task={task}, last_reward={last_reward:+.2f})\n\n"
+            f"Step {step} (task={task}, last_reward={last_reward:.2f})\n\n"
             f"USER STATE:\n"
             f"  fatigue={_float(obs.get('visible_fatigue')):.2f}  "
             f"trust={_float(obs.get('visible_trust')):.2f}  "
@@ -347,27 +344,28 @@ def _fake_step(action: Dict[str, Any], step_num: int, max_steps: int, obs: Dict[
     s = _float(obs.get("visible_satisfaction"), 0.5)
 
     if atype == "pause_session":
-        f, t, s = max(0.0, f-0.20), min(1.0, t+0.05), s
+        f, t, s = max(0.0001, f-0.20), min(0.9999, t+0.05), s
     elif atype == "diversify_feed":
-        f, t, s = max(0.0, f-0.08), min(1.0, t+0.02), s
+        f, t, s = max(0.0001, f-0.08), min(0.9999, t+0.02), s
     elif atype == "explore_new_topic":
-        f, t, s = f, min(1.0, t+0.01), s
+        f, t, s = f, min(0.9999, t+0.01), s
     else:
         is_manip  = cid in MANIPULATIVE_CONTENT
         is_addict = cid in ADDICTIVE_CONTENT
-        f = min(1.0, f + (0.12 if is_addict else 0.07))
-        t = max(0.0, t - (0.20 if is_manip  else 0.01))
-        s = min(1.0, s + (-0.03 if is_manip else 0.05))
+        f = min(0.9999, f + (0.12 if is_addict else 0.07))
+        t = max(0.0001, t - (0.20 if is_manip  else 0.01))
+        s = min(0.9999, s + (-0.03 if is_manip else 0.05))
 
     reward = round(rng.uniform(0.35, 0.75), 4)
     done   = step_num >= max_steps
     new_obs = dict(obs)
+    existing_ids = obs.get("recent_content_ids") or []
     new_obs.update({
         "visible_fatigue":      round(f, 4),
         "visible_trust":        round(t, 4),
         "visible_satisfaction": round(s, 4),
         "step_count":           step_num,
-        "recent_content_ids":   (obs.get("recent_content_ids") or [] + ([cid] if cid else []))[-5:],
+        "recent_content_ids":   (existing_ids + ([cid] if cid else []))[-5:],
     })
     eng = round(rng.uniform(0.40, 0.75), 4)
     info: Dict[str, Any] = {
@@ -377,8 +375,9 @@ def _fake_step(action: Dict[str, Any], step_num: int, max_steps: int, obs: Dict[
         "user_state": {"trust": round(t, 4), "fatigue": round(f, 4), "addiction_risk": 0.10},
     }
     if done:
+        raw_score = 0.40*eng + 0.35*t + 0.25*s
         info["episode_grade"] = {
-            "final_score":        round(0.40*eng + 0.35*t + 0.25*s, 4),
+            "final_score":        round(max(0.0001, min(raw_score, 0.9999)), 4),
             "avg_engagement":     eng,
             "final_trust":        round(t, 4),
             "final_satisfaction": round(s, 4),
@@ -400,8 +399,8 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
         reset_data = _fake_reset(task_id) if dry_run else call_reset(task_id)
     except Exception as e:
         print(f"[ERROR] reset failed: {e}\n{traceback.format_exc()}", file=sys.stderr)
-        log_end(success=False, steps=0, score=0.0)
-        return {"score": 0.0, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
+        log_end(success=False, steps=0, score=0.0001, rewards=[])
+        return {"score": 0.0001, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
 
     try:
         obs = reset_data.get("observation", reset_data)
@@ -420,7 +419,6 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
         step_num += 1
         error_str: Optional[str] = None
 
-        # Decide action
         try:
             if dry_run:
                 action = _smart_policy(obs)
@@ -438,7 +436,6 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
 
         action_str = _action_str(action)
 
-        # Build env action
         try:
             env_action: Dict[str, Any] = {"action_type": action.get("action_type", "explore_new_topic")}
             if action.get("content_id"):
@@ -446,7 +443,6 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
         except Exception:
             env_action = {"action_type": "explore_new_topic"}
 
-        # Step env
         try:
             result = (
                 _fake_step(env_action, step_num, max_steps, obs)
@@ -476,19 +472,18 @@ def run_episode(task_id: str, max_steps_override: int = 0, dry_run: bool = False
             print(f"[ERROR] result parsing failed: {e}", file=sys.stderr)
             log_step(step_num, action_str, 0.0, done, error=f"parse_error:{str(e)[:60]}")
 
-    # Score
     try:
         if episode_grade and "final_score" in episode_grade:
             score = round(_float(episode_grade["final_score"]), 4)
         else:
             max_total = float(max_steps)
-            score = round(min(sum(rewards) / max_total, 1.0), 4) if max_total > 0 else 0.0
+            score = round(min(sum(rewards) / max_total, 1.0), 4) if max_total > 0 else 0.0001
         score   = max(0.0001, min(score, 0.9999))
         success = score >= threshold
     except Exception:
-        score, success = 0.0, False
+        score, success = 0.0001, False
 
-    log_end(success=success, steps=step_num, score=score)
+    log_end(success=success, steps=step_num, score=score, rewards=rewards)
     return {"score": score, "success": success, "steps": step_num,
             "rewards": rewards, "episode_grade": episode_grade}
 
@@ -506,12 +501,19 @@ def main() -> None:
     print(f"[DEBUG] ENV_URL={ENV_URL}",             file=sys.stderr)
     print(f"[DEBUG] API_BASE_URL={API_BASE_URL}",   file=sys.stderr)
     print(f"[DEBUG] MODEL_NAME={MODEL_NAME}",       file=sys.stderr)
-    print(f"[DEBUG] API_KEY={'SET' if API_KEY else 'NOT SET'}", file=sys.stderr)
+    print(f"[DEBUG] HF_TOKEN={'SET' if HF_TOKEN else 'NOT SET'}", file=sys.stderr)
+    print(f"[DEBUG] API_KEY={'SET' if API_KEY else 'NOT SET'}",   file=sys.stderr)
 
     if not args.dry_run:
-        if not API_BASE_URL or not API_KEY:
-            print("[WARN] API_BASE_URL or API_KEY not set — falling back to dry-run", file=sys.stderr)
-            args.dry_run = True
+        missing = []
+        if not API_BASE_URL:
+            missing.append("API_BASE_URL")
+        if not API_KEY:
+            missing.append("HF_TOKEN / API_KEY")
+        if missing:
+            print(f"[ERROR] Required environment variables not set: {', '.join(missing)}", file=sys.stderr)
+            print("[ERROR] Set API_BASE_URL, MODEL_NAME, and HF_TOKEN before running.", file=sys.stderr)
+            sys.exit(1)
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
     results: Dict[str, Dict] = {}
@@ -525,9 +527,8 @@ def main() -> None:
             )
         except Exception as e:
             print(f"[ERROR] run_episode crashed for {task_id}: {e}\n{traceback.format_exc()}", file=sys.stderr)
-            results[task_id] = {"score": 0.0, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
-            # Still log [END] so output parser doesn't crash
-            log_end(success=False, steps=0, score=0.0)
+            results[task_id] = {"score": 0.0001, "success": False, "steps": 0, "rewards": [], "episode_grade": {}}
+            log_end(success=False, steps=0, score=0.0001, rewards=[])
 
     print("\n" + "=" * 62, file=sys.stderr)
     print("  BASELINE SUMMARY", file=sys.stderr)
@@ -550,7 +551,6 @@ def main() -> None:
     print(f"\n  Overall avg score: {overall:.4f}", file=sys.stderr)
     print("=" * 62, file=sys.stderr)
 
-    # Exit 0 always — let the validator judge scores, not exit code
     sys.exit(0)
 
 
