@@ -74,7 +74,7 @@ class SimulationEngine:
             if cid in catalog:
                 item = catalog[cid]
                 # Use dominant topic as category proxy
-                dominant = max(item.topic_relevance, key=item.topic_relevance.get)
+                dominant = max(item.topic_relevance, key=lambda k: item.topic_relevance[k])
                 cats[dominant] = cats.get(dominant, 0) + 1
 
         n = len(recent_ids)
@@ -147,8 +147,15 @@ class SimulationEngine:
             alpha = 0.12
             beta = 0.08
             s += alpha * engagement_quality - beta * user.fatigue
-            s = max(0.0001, min(s, 0.9999))
-        return s
+        # Clamp unconditionally, matching update_fatigue/update_trust/
+        # update_addiction_risk/update_boredom's pattern -- previously this
+        # was only applied inside specific branches, which left satisfaction
+        # unclamped (and reachable below 0.0) for any action_type/content
+        # combination that fell through both branches above (e.g. spamming
+        # pause_session from a low starting satisfaction -- see
+        # tests/test_simulation_properties.py for the property test that
+        # caught this and the exact reproduction).
+        return max(0.0001, min(s, 0.9999))
 
     # ── Addiction Risk Transition ────────────────────────────────────────
     @staticmethod

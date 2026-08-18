@@ -66,6 +66,7 @@ def _collect_ppo_trajectory(task_id: str, seed: int) -> dict:
         obs, reward, terminated, truncated, info = env.step(int(action_int))
         done = terminated or truncated
         raw = env._last_obs
+        assert raw is not None  # populated by the step() call just above
         trust.append(raw.visible_trust)
         satisfaction.append(raw.visible_satisfaction)
         reward_hist.append(reward)
@@ -105,6 +106,7 @@ def _collect_random_trajectory(task_id: str, seed: int) -> dict:
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         raw = env._last_obs
+        assert raw is not None  # populated by the step() call just above
         trust.append(raw.visible_trust)
         satisfaction.append(raw.visible_satisfaction)
         reward_hist.append(reward)
@@ -114,7 +116,7 @@ def _collect_random_trajectory(task_id: str, seed: int) -> dict:
             "reward": reward_hist, "grade": final.get("episode_grade", {})}
 
 
-def _pad(lst: list, length: int, fill: float = None) -> list:
+def _pad(lst: list, length: int, fill: Optional[float] = None) -> list:
     """Pad a trajectory to fixed length (last value repeated)."""
     if fill is None:
         fill = lst[-1] if lst else 0.0
@@ -129,7 +131,7 @@ def plot_trust_trajectory(task_id: str, n_seeds: int = 10):
     max_steps = {"easy": 15, "medium": 20, "hard": 25}[task_id]
     steps = list(range(1, max_steps + 1))
 
-    all_trust = {"random": [], "heuristic": [], "ppo": []}
+    all_trust: dict = {"random": [], "heuristic": [], "ppo": []}
 
     for seed in range(n_seeds):
         r = _collect_random_trajectory(task_id, seed)
@@ -186,8 +188,8 @@ def plot_score_comparison(n_seeds: int = 10):
         "ppo":       _collect_ppo_trajectory,
     }
 
-    scores = {a: [] for a in agents}
-    errors = {a: [] for a in agents}
+    scores: dict = {a: [] for a in agents}
+    errors: dict = {a: [] for a in agents}
 
     for task in tasks:
         for agent in agents:

@@ -27,8 +27,9 @@ class ContentItem(BaseModel):
     content_id: str
     title: str
 
-    # ❌ REMOVED: content_type
-    # ❌ REMOVED: base_engagement
+    content_type: ContentType = Field(
+        description="Coarse content category, used for diversity/repetition analysis"
+    )
 
     topic_relevance: Dict[str, float] = Field(
         description="Relevance weight per interest topic, each in [0, 1]"

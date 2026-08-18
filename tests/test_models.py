@@ -9,6 +9,7 @@ def test_content_item_topic_relevance_bounds() -> None:
         ContentItem(
             content_id="bad_rel",
             title="Bad Relevance",
+            content_type="relevant",
             topic_relevance={"technology": 1.2},
             addictiveness=0.1,
             manipulation_score=0.1,

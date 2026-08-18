@@ -121,3 +121,57 @@ def test_structured_episode_done_error() -> None:
     final = client.post("/step", json={"action": {"action_type": "pause_session"}})
     assert final.status_code == 400
     assert final.json()["detail"]["code"] == "EPISODE_DONE"
+
+def test_reset_unknown_task_returns_400() -> None:
+    client = TestClient(app)
+    response = client.post("/reset", json={"task": "esay"})  # typo, not "easy"
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "UNKNOWN_TASK"
+
+
+def test_policies_unknown_task_returns_400() -> None:
+    client = TestClient(app)
+    response = client.get("/policies", params={"task": "not_a_real_task"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "UNKNOWN_TASK"
+
+
+def test_reset_accepts_documented_task_aliases() -> None:
+    client = TestClient(app)
+    response = client.post("/reset", json={"task": "trust_preservation"})
+
+    assert response.status_code == 200
+    assert response.json()["observation"]["task_id"] == "hard"
+
+def test_reset_default_observability_is_oracle() -> None:
+    """No observability param -> defaults to oracle, matching pre-existing
+    behavior exactly (backward compatible)."""
+    client = TestClient(app)
+    response = client.post("/reset", json={"task": "easy"})
+
+    assert response.status_code == 200
+    content = response.json()["observation"]["available_content"]
+    scores = {item["manipulation_score"] for item in content}
+    # oracle mode -> real, varied scores across items (not all masked to one value)
+    assert len(scores) > 1
+
+
+def test_reset_partial_observability_masks_manipulation_score() -> None:
+    client = TestClient(app)
+    response = client.post("/reset", json={"task": "easy", "observability": "partial"})
+
+    assert response.status_code == 200
+    content = response.json()["observation"]["available_content"]
+    scores = {item["manipulation_score"] for item in content}
+    # partial mode -> every item shows the identical masked constant
+    assert len(scores) == 1
+
+
+def test_reset_invalid_observability_returns_400() -> None:
+    client = TestClient(app)
+    response = client.post("/reset", json={"task": "easy", "observability": "omniscient"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_OBSERVABILITY"

@@ -193,7 +193,13 @@ def test_train_task_warmstart_path(tmp_path, monkeypatch):
 
     path = train_rl.train_task("easy", total_timesteps=1, n_envs=1, warmstart_path=str(warm_path))
 
-    assert path.endswith("ppo_easy_final")
+    # Previously this asserted path.endswith("ppo_easy_final") -- i.e. warm-started
+    # and from-scratch training at the same task/seed produced the SAME save path.
+    # That was a real bug: it meant training "hard" both with and without warm-start
+    # (e.g. to compare them, as in curriculum_ablation.py) silently overwrote one
+    # checkpoint with the other. Fixed by adding a _warmstart suffix whenever
+    # warmstart_path is provided; this test now locks in the corrected behavior.
+    assert path.endswith("ppo_easy_warmstart_final")
 
 
 def test_eval_ppo_verbose_prints(tmp_path, capsys):

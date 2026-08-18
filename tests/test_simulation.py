@@ -22,6 +22,7 @@ def make_test_content() -> ContentItem:
     return ContentItem(
         content_id="rel_tech_01",
         title="Tech Innovation Weekly",
+        content_type="relevant",
         topic_relevance={"technology": 1.0, "science": 0.4},
         addictiveness=0.15,
         manipulation_score=0.05,

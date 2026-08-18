@@ -47,7 +47,7 @@ def smart_policy_action(obs: Dict[str, Any]) -> Dict[str, Any]:
             return {"action_type": "diversify_feed", "reasoning": "high boredom"}
 
         interest_dist = obs.get("interest_distribution") or {}
-        dominant = max(interest_dist, key=interest_dist.get) if interest_dist else "technology"
+        dominant = max(interest_dist, key=lambda k: interest_dist[k]) if interest_dist else "technology"
         recent = set(obs.get("recent_content_ids") or [])
 
         best_id: Optional[str] = None

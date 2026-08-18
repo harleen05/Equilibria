@@ -24,4 +24,9 @@ include = ["environment*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-q --cov=environment --cov-report=term-missing"
+addopts = "-q --cov=environment --cov=server --cov=inference --cov-report=term-missing"
+[tool.mypy]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+files = ["environment", "server"]

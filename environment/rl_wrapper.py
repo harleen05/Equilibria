@@ -35,8 +35,7 @@ from gymnasium import spaces
 from typing import Optional, Tuple, Dict, Any, List
 
 from environment.env_core import AttentionEconomyEnv
-from environment.models import Action, Observation
-
+from environment.models import Action, Observation, ActionType
 
 # ─────────────────────────────────────────────
 # Constants
@@ -61,8 +60,7 @@ ALL_CONTENT_IDS: List[str] = [
 ]
 
 # Non-content actions appended at the end of the discrete action space
-META_ACTIONS: List[str] = ["diversify_feed", "explore_new_topic", "pause_session"]
-
+META_ACTIONS: List[ActionType] = ["diversify_feed", "explore_new_topic", "pause_session"]
 # Observation vector layout (sizes)
 N_USER_SCALARS   = 4          # fatigue, trust, satisfaction, boredom
 N_TOPICS         = len(ALL_TOPICS)   # 9
@@ -211,7 +209,7 @@ class AttentionEnvWrapper(gym.Env):
         Boolean mask over the action space: True = valid action for this task.
         Compatible with MaskablePPO (sb3-contrib) for improved sample efficiency.
         """
-        mask = np.zeros(self.action_space.n, dtype=bool)
+        mask = np.zeros(self.action_space.n, dtype=bool)  # type: ignore[attr-defined, type-var]
         for i, cid in enumerate(ALL_CONTENT_IDS):
             if cid in self._allowed_set:
                 mask[i] = True
@@ -299,3 +297,35 @@ class AttentionEnvWrapper(gym.Env):
         if action < N_CONTENT:
             return ALL_CONTENT_IDS[action]
         return META_ACTIONS[action - N_CONTENT]
+
+# ─────────────────────────────────────────────
+# Env factory (centralizes masked-vs-unmasked construction)
+# ─────────────────────────────────────────────
+
+def build_env(task_id: str = "medium", masked: bool = False) -> "gym.Env":
+    """
+    Construct a single AttentionEnvWrapper, optionally wrapped for use with
+    sb3-contrib's MaskablePPO.
+
+    Named build_env (not make_env) deliberately: train_rl.py already has
+    its own module-level make_env(task_id) with a different signature (it
+    returns a thunk for DummyVecEnv, not an env instance) -- importing a
+    same-named function from here would silently shadow or be shadowed by
+    that one depending on import order.
+
+    `masked` must match whichever algorithm you construct: wrapping with
+    ActionMasker but training with plain PPO is a silent no-op (PPO doesn't
+    know to look for a mask), and training with MaskablePPO on an
+    unwrapped env will raise, since MaskablePPO requires the env to expose
+    the action_masks() method through this specific wrapper convention.
+
+    NOTE: action_masks() reads self._allowed_set, which is only populated
+    inside AttentionEnvWrapper.reset() -- calling action_masks() before the
+    first reset() returns a mask with every content action False (only the
+    3 meta-actions valid). Always reset() before querying the mask.
+    """
+    env: gym.Env = AttentionEnvWrapper(task_id=task_id)
+    if masked:
+        from sb3_contrib.common.wrappers import ActionMasker
+        env = ActionMasker(env, lambda e: e.action_masks())  # type: ignore[attr-defined]
+    return env

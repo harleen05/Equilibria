@@ -78,6 +78,15 @@ class ResetRequest(BaseModel):
     task: str = Field(default="medium", description="Task id: easy, medium, or hard")
     task_id: Optional[str] = Field(default=None, description="Alias for task")
     seed: Optional[int] = Field(default=None, description="Optional RNG seed")
+    observability: str = Field(
+        default="oracle",
+        description=(
+            "'oracle' (default): agent observes true manipulation_score per "
+            "item. 'partial': manipulation_score is masked to a neutral "
+            "constant, forcing the agent to infer manipulativeness from "
+            "engagement/trust/fatigue behavior instead of reading it directly."
+        ),
+    )
     new_session: bool = Field(
         default=False,
         description="If true, allocate a fresh session id",
@@ -119,7 +128,15 @@ def get_env(session_id: str = Depends(get_session_id)) -> AttentionEconomyEnv:
 
 
 def normalize_task(raw: str) -> str:
-    return TASK_MAP.get(raw, "medium")
+    resolved = TASK_MAP.get(raw)
+    if resolved is None:
+        raise api_error(
+            400,
+            "UNKNOWN_TASK",
+            f"Unknown task '{raw}'. Choose one of: {sorted(set(TASK_MAP.values()))} "
+            f"(aliases accepted: {sorted(TASK_MAP.keys())})",
+        )
+    return resolved
 
 
 # ──────────────────────────────────────────────
@@ -169,8 +186,10 @@ async def reset(
     task = normalize_task(raw)
 
     try:
-        obs = env.reset(task, seed=req.seed)
+        obs = env.reset(task, seed=req.seed, observability=req.observability)
         return ResetResponse(observation=obs.model_dump(), session_id=session_id)
+    except ValueError as e:
+        raise api_error(400, "INVALID_OBSERVABILITY", str(e)) from e
     except Exception as e:
         raise api_error(500, "RESET_FAILED", f"reset() failed: {e}") from e
 

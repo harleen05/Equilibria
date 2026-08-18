@@ -2,9 +2,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
-from environment.models import (
-    Action, ContentItem, Observation, UserState
-)
+from environment.models import Action, ContentItem, Observation, UserState
 from environment.content import get_full_catalog
 from environment.simulation import SimulationEngine
 from environment.reward import RewardFunction
@@ -14,6 +12,7 @@ from environment.tasks import get_task
 # ─────────────────────────────────────────────
 # Episode Grader
 # ─────────────────────────────────────────────
+
 
 class EpisodeGrader:
     WEIGHTS = {
@@ -27,18 +26,18 @@ class EpisodeGrader:
         avg_eng = sum(engagement_history) / len(engagement_history) if engagement_history else 0.0
 
         score = (
-            cls.WEIGHTS["avg_engagement"] * avg_eng +
-            cls.WEIGHTS["final_trust"] * final_user.trust +
-            cls.WEIGHTS["final_satisfaction"] * final_user.satisfaction
+            cls.WEIGHTS["avg_engagement"] * avg_eng
+            + cls.WEIGHTS["final_trust"] * final_user.trust
+            + cls.WEIGHTS["final_satisfaction"] * final_user.satisfaction
         )
 
         def _clamp(v):
             return round(min(max(float(v), 0.0001), 0.9999), 4)
 
         return {
-            "final_score":        _clamp(score),
-            "avg_engagement":     _clamp(avg_eng),
-            "final_trust":        _clamp(final_user.trust),
+            "final_score": _clamp(score),
+            "avg_engagement": _clamp(avg_eng),
+            "final_trust": _clamp(final_user.trust),
             "final_satisfaction": _clamp(final_user.satisfaction),
         }
 
@@ -46,6 +45,7 @@ class EpisodeGrader:
 # ─────────────────────────────────────────────
 # Environment
 # ─────────────────────────────────────────────
+
 
 class AttentionEconomyEnv:
 
@@ -64,13 +64,39 @@ class AttentionEconomyEnv:
         self.engagement_history: List[float] = []
         self.done = False
         self.task_id = None
-        self.consecutive_pauses: int = 0   # tracks pause spamming
+        self.consecutive_pauses: int = 0  # tracks pause spamming
+        self.observability: str = "oracle"
+
+    @property
+    def _manipulation_mask_value(self) -> float:
+        """
+        Catalog-wide mean manipulation_score, used to mask the field in
+        'partial' observability mode. Deliberately NOT 0.0 -- masking to 0.0
+        would falsely signal "definitely not manipulative" to the agent.
+        The mean is uninformative (identical across all items, so it can't
+        be used to discriminate) without being actively misleading.
+        """
+        scores = [item.manipulation_score for item in self.catalog.values()]
+        return sum(scores) / len(scores)
 
     # ─────────────────────────────
     # RESET
     # ─────────────────────────────
 
-    def reset(self, task_id: str = "medium", seed: Optional[int] = None) -> Observation:
+    def reset(
+        self,
+        task_id: str = "medium",
+        seed: Optional[int] = None,
+        observability: str = "oracle",
+    ) -> Observation:
+        if observability not in ("oracle", "partial"):
+            raise ValueError(
+                f"Invalid observability mode '{observability}'. "
+                "Must be 'oracle' (agent sees true manipulation_score) or "
+                "'partial' (manipulation_score is masked to a neutral constant)."
+            )
+        self.observability = observability
+
         task_cfg, user = get_task(task_id)
 
         self.user = user
@@ -96,42 +122,45 @@ class AttentionEconomyEnv:
     # ─────────────────────────────
 
     def step(self, action) -> Tuple[Observation, float, bool, Dict]:
+        if self.user is None or self.reward_fn is None:
+            raise RuntimeError("Environment not reset. Call reset() before step().")
         if self.done:
             raise RuntimeError("Episode finished. Call reset().")
 
         if isinstance(action, dict):
             action = Action(**action)
 
-    # ── Validate action ──
+        # ── Validate action ──
         if action.action_type not in [
-        "recommend", "explore_new_topic", "diversify_feed", "pause_session"
-    ]:
+            "recommend",
+            "explore_new_topic",
+            "diversify_feed",
+            "pause_session",
+        ]:
             raise ValueError("Invalid action type")
 
-    # ── Resolve content ──
+        # ── Resolve content ──
         content = None
         if action.action_type == "recommend":
             if action.content_id not in self.catalog:
                 raise ValueError("Invalid content_id")
             if action.content_id not in self.allowed_content_ids:
                 raise ValueError("Content not allowed in this task")
-    
 
             content = self.catalog[action.content_id]
 
-    # ── Simulation ──
+        # ── Simulation ──
         updated_user, diagnostics = self.engine.apply_transition(
-        user=self.user,
-        action=action,
-        content=content,
-        history=self.history,
-        catalog=self.catalog,
-    )
-    
+            user=self.user,
+            action=action,
+            content=content,
+            history=self.history,
+            catalog=self.catalog,
+        )
 
         engagement = diagnostics["engagement"]
 
-    # ── Update state ──
+        # ── Update state ──
         self.user = updated_user
         self.step_count += 1
 
@@ -142,18 +171,18 @@ class AttentionEconomyEnv:
             self.consecutive_pauses = 0
 
         if content:
-          self.history.append(content.content_id)
+            self.history.append(content.content_id)
 
-    # ── Reward ──
+        # ── Reward ──
         reward, breakdown = self.reward_fn.compute(
-        engagement=engagement,
-        satisfaction=self.user.satisfaction,
-        trust=self.user.trust,
-        fatigue=self.user.fatigue,
-        manipulation_score=content.manipulation_score if content else 0.0,
-        addiction_risk=self.user.addiction_risk,
-        diversity_score=diagnostics["diversity_score"],
-    )
+            engagement=engagement,
+            satisfaction=self.user.satisfaction,
+            trust=self.user.trust,
+            fatigue=self.user.fatigue,
+            manipulation_score=content.manipulation_score if content else 0.0,
+            addiction_risk=self.user.addiction_risk,
+            diversity_score=diagnostics["diversity_score"],
+        )
 
         # Hard penalty for spamming pause — more than 2 consecutive = diminishing returns
         if self.consecutive_pauses > 2:
@@ -161,75 +190,80 @@ class AttentionEconomyEnv:
 
         self.engagement_history.append(engagement)
 
-    # ── Done conditions ──
+        # ── Done conditions ──
         max_steps_reached = self.step_count >= self.max_steps
         trust_collapse = self.user.trust <= 0.05
         fatigue_overload = self.user.fatigue >= 0.95
 
         self.done = max_steps_reached or trust_collapse or fatigue_overload
 
-    # ── Info ──
+        # ── Info ──
         info = {
-        "step": self.step_count,
-        "task": self.task_id,
-        "diagnostics": diagnostics,
-        "reward_breakdown": breakdown,
-        "user_state": {
-            "trust": round(self.user.trust, 4),
-            "fatigue": round(self.user.fatigue, 4),
-            "addiction_risk": round(self.user.addiction_risk, 4),
-        },
-    }
+            "step": self.step_count,
+            "task": self.task_id,
+            "diagnostics": diagnostics,
+            "reward_breakdown": breakdown,
+            "user_state": {
+                "trust": round(self.user.trust, 4),
+                "fatigue": round(self.user.fatigue, 4),
+                "addiction_risk": round(self.user.addiction_risk, 4),
+            },
+        }
 
         if self.done:
-          info["episode_grade"] = EpisodeGrader.grade(
-            self.engagement_history,
-            self.user
-        )
+            info["episode_grade"] = EpisodeGrader.grade(self.engagement_history, self.user)
 
         return self._get_observation(), reward, self.done, info
-    
+
     # ─────────────────────────────
     # OBSERVATION
     # ─────────────────────────────
 
     def _get_observation(self) -> Observation:
+        assert self.user is not None, "Environment not reset. Call reset() before _get_observation()."
         return Observation(
-        # Visible user signals
-        visible_fatigue=self.user.fatigue,
-        visible_trust=self.user.trust,
-        visible_satisfaction=self.user.satisfaction,
-        visible_boredom=self.user.boredom,
-
-        # Session
-        session_length=self.user.session_length,
-        step_count=self.step_count,   # ✅ FIX 1
-
-        # Preferences
-        interest_distribution=self.user.interest_distribution,
-
-        # Expose only allowed content for this task, as ContentItem objects
-        available_content=[
-            self.catalog[cid]
-            for cid in self.allowed_content_ids
-            if cid in self.catalog
-        ],
-
-        # History
-        recent_content_ids=self.history[-5:],
-
-        # Diversity proxy
-        recent_diversity_score=min(len(set(self.history[-5:])), 5) / 5.0,
-
-        # Task
-        task_id=self.task_id,
-    )
+            # Visible user signals
+            visible_fatigue=self.user.fatigue,
+            visible_trust=self.user.trust,
+            visible_satisfaction=self.user.satisfaction,
+            visible_boredom=self.user.boredom,
+            # Session
+            session_length=self.user.session_length,
+            step_count=self.step_count,  # ✅ FIX 1
+            # Preferences
+            interest_distribution=self.user.interest_distribution,
+            # Expose only allowed content for this task, as ContentItem objects.
+            # In "partial" observability mode, manipulation_score is masked to
+            # a neutral constant -- the agent must infer manipulativeness from
+            # behavior (engagement/trust/fatigue trajectories) rather than
+            # reading it directly off the content. Reward computation in
+            # step() always uses the TRUE manipulation_score from self.catalog
+            # regardless of this setting -- only what the agent observes changes.
+            available_content=[
+                (
+                    self.catalog[cid]
+                    if self.observability == "oracle"
+                    else self.catalog[cid].model_copy(
+                        update={"manipulation_score": self._manipulation_mask_value}
+                    )
+                )
+                for cid in self.allowed_content_ids
+                if cid in self.catalog
+            ],
+            # History
+            recent_content_ids=self.history[-5:],
+            # Diversity proxy
+            recent_diversity_score=min(len(set(self.history[-5:])), 5) / 5.0,
+            # Task
+            task_id=self.task_id,
+        )
 
     # ─────────────────────────────
     # STATE (DEBUG)
     # ─────────────────────────────
 
     def state(self) -> Dict:
+        assert self.user is not None, "Environment not reset. Call reset() before state()."
         return {
             "user": self.user.model_dump(),
             "step": self.step_count,
